@@ -1,0 +1,2 @@
+# photo-cleaner
+school project

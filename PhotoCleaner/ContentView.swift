@@ -1,25 +1,7 @@
 import SwiftUI
 
-private enum SwipeDirection: String, CaseIterable {
+private enum SwipeDirection {
     case left = "Left", right = "Right", up = "Up", down = "Down"
-
-    var symbol: String {
-        switch self {
-        case .left: return "arrow.left"
-        case .right: return "arrow.right"
-        case .up: return "arrow.up"
-        case .down: return "arrow.down"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .left: return .pink
-        case .right: return .mint
-        case .up: return .cyan
-        case .down: return .orange
-        }
-    }
 
     var destination: CGSize {
         switch self {
@@ -35,7 +17,6 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var offset: CGSize = .zero
     @State private var cardIndex = 0
-    @State private var lastDirection: SwipeDirection?
     @State private var isDismissing = false
     @State private var didDoubleTap = false
 
@@ -46,9 +27,8 @@ struct ContentView: View {
         ("Stay curious", "Your next favorite moment is waiting.", "sparkles", [.pink, .purple, .indigo])
     ]
 
-    private var activeDirection: SwipeDirection? {
-        guard max(abs(offset.width), abs(offset.height)) > 18 else { return nil }
-        return direction(for: offset)
+    private var revealProgress: CGFloat {
+        min(max(abs(offset.width), abs(offset.height)) / 240, 1)
     }
 
     var body: some View {
@@ -70,73 +50,76 @@ struct ContentView: View {
 
                 Spacer(minLength: 0)
                 ZStack {
-                    card(at: cardIndex + 1)
-                        .scaleEffect(0.93).offset(y: 15).opacity(0.5)
-                    card(at: cardIndex)
-                        .overlay(alignment: .topLeading) {
-                            if let direction = activeDirection {
-                                Label(direction.rawValue.uppercased(), systemImage: direction.symbol)
-                                    .font(.headline).padding(14)
-                                    .background(direction.color, in: Capsule())
-                                    .foregroundStyle(.black).padding(22)
-                            }
-                        }
-                        .offset(offset)
-                        .rotationEffect(.degrees(Double(offset.width / 28)))
-                        .gesture(DragGesture(minimumDistance: 10)
-                            .onChanged { value in
-                                guard !isDismissing else { return }
-                                offset = value.translation
-                            }
-                            .onEnded { value in
-                                guard !isDismissing else { return }
-                                let actual = value.translation
-                                let predicted = value.predictedEndTranslation
-                                if max(abs(actual.width), abs(actual.height)) > 90 {
-                                    dismiss(direction(for: actual))
-                                } else if max(abs(actual.width), abs(actual.height)) > 25 && max(abs(predicted.width), abs(predicted.height)) > 180 {
-                                    dismiss(direction(for: predicted))
-                                } else {
-                                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { offset = .zero }
+                    ForEach(Array((cardIndex...cardIndex + 2).reversed()), id: \.self) { index in
+                        let depth = index - cardIndex
+                        card(at: index)
+                            .scaleEffect(depth == 0 ? 1 : 1 - CGFloat(depth) * 0.05 + revealProgress * 0.05)
+                            .offset(y: depth == 0 ? 0 : CGFloat(depth) * 14 - revealProgress * 14)
+                            .opacity(depth == 0 ? 1 : 1 - Double(depth) * 0.15 + Double(revealProgress) * 0.15)
+                            .offset(depth == 0 ? offset : .zero)
+                            .rotationEffect(.degrees(depth == 0 && !reduceMotion ? Double(offset.width / 35) : 0))
+                            .overlay(RoundedRectangle(cornerRadius: 32).strokeBorder(.white.opacity(didDoubleTap && depth == 0 ? 0.65 : 0), lineWidth: 2))
+                            .zIndex(Double(3 - depth))
+                            .allowsHitTesting(depth == 0 && !isDismissing)
+                            .accessibilityHidden(depth != 0)
+                            .gesture(DragGesture(minimumDistance: 10)
+                                .onChanged { value in
+                                    guard !isDismissing else { return }
+                                    offset = value.translation
                                 }
-                            })
-                        .simultaneousGesture(TapGesture(count: 2).onEnded { registerDoubleTap() })
-                        .accessibilityAction(named: Text("Double-tap card")) { registerDoubleTap() }
-                        .accessibilityLabel("\(cards[cardIndex % cards.count].title). Card \(cardIndex + 1)")
-                        .accessibilityHint("Swipe in any direction or use the direction buttons below. Double-tap for feedback.")
+                                .onEnded { value in
+                                    guard !isDismissing else { return }
+                                    let actual = value.translation
+                                    let predicted = value.predictedEndTranslation
+                                    if max(abs(actual.width), abs(actual.height)) > 90 {
+                                        dismiss(direction(for: actual))
+                                    } else if max(abs(actual.width), abs(actual.height)) > 25 && max(abs(predicted.width), abs(predicted.height)) > 180 {
+                                        dismiss(direction(for: predicted))
+                                    } else {
+                                        withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)) {
+                                            offset = .zero
+                                        }
+                                    }
+                                })
+                            .simultaneousGesture(TapGesture(count: 2).onEnded { registerDoubleTap() })
+                            .accessibilityLabel("\(cards[index % cards.count].title). Card \(index + 1)")
+                            .accessibilityHint("Swipe in any direction to advance.")
+                            .accessibilityAction(named: Text("Swipe left")) { dismiss(.left) }
+                            .accessibilityAction(named: Text("Swipe right")) { dismiss(.right) }
+                            .accessibilityAction(named: Text("Swipe up")) { dismiss(.up) }
+                            .accessibilityAction(named: Text("Swipe down")) { dismiss(.down) }
+                    }
                 }
                 .frame(height: cardHeight)
                 .zIndex(1)
                 Spacer(minLength: 0)
 
-                HStack(spacing: 10) {
-                    Circle().fill(lastDirection?.color ?? .mint).frame(width: 6, height: 6)
-                    Text(didDoubleTap ? "Double-tapped" : lastDirection.map { "Swiped \($0.rawValue.lowercased()) · Keep exploring" } ?? "Pick a direction to get started")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .accessibilityAddTraits(.updatesFrequently)
-                }
-                HStack(spacing: 16) {
-                    ForEach(SwipeDirection.allCases, id: \.self) { direction in
-                        Button { dismiss(direction) } label: {
-                            Image(systemName: direction.symbol)
-                                .font(.title3.weight(.semibold))
-                                .frame(maxWidth: .infinity).frame(height: 56)
-                                .background(direction.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
-                                .foregroundStyle(direction.color)
-                        }
-                        .accessibilityLabel("Swipe \(direction.rawValue.lowercased())")
-                        .disabled(isDismissing)
-                    }
-                }
-                Text("SWIPE UP. DOWN. LEFT. RIGHT.")
-                    .font(.system(size: 9, weight: .semibold)).tracking(2).foregroundStyle(.secondary)
             }
             .padding(24)
             .frame(maxWidth: 540).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Color(red: 0.035, green: 0.055, blue: 0.09).ignoresSafeArea())
         .foregroundStyle(.white)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            swipeTab
+                .padding(.bottom, 8)
+                .padding(.top, 12)
+        }
         .preferredColorScheme(.dark)
+    }
+
+    private var swipeTab: some View {
+        Button(action: {}) {
+            Label("Swipe", systemImage: "hand.draw.fill")
+        }
+            .buttonStyle(.plain)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.mint)
+            .padding(.horizontal, 22)
+            .frame(height: 48)
+            .modifier(FloatingTabGlass())
+            .accessibilityAddTraits(.isSelected)
+            .accessibilityLabel("Swipe tab, selected")
     }
 
     private func card(at index: Int) -> some View {
@@ -183,20 +166,39 @@ struct ContentView: View {
     private func dismiss(_ direction: SwipeDirection) {
         guard !isDismissing else { return }
         isDismissing = true
-        withAnimation(reduceMotion ? nil : .easeIn(duration: 0.24)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.92), completionCriteria: .removed) {
             offset = direction.destination
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(reduceMotion ? 0 : 250))
+        } completion: {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 cardIndex += 1
-                didDoubleTap = false
                 offset = .zero
-                lastDirection = direction
+                didDoubleTap = false
                 isDismissing = false
             }
         }
+    }
+}
+
+private struct FloatingTabGlass: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            fallback(content)
+        }
+        #else
+        fallback(content)
+        #endif
+    }
+
+    private func fallback(_ content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
+            .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
     }
 }

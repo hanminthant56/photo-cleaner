@@ -289,6 +289,18 @@ struct ContentView: View {
             .overlay(alignment: removing ? .topTrailing : .topLeading) {
                 if front { decisionBadge.opacity(Double(progress)).padding(20) }
             }
+            .overlay(alignment: .bottomLeading) {
+                if front {
+                    Button { openAlbums(for: asset) } label: {
+                        Image(systemName: "rectangle.stack.badge.plus")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain).padding(16)
+                    .accessibilityLabel("Add to album")
+                }
+            }
             .overlay(alignment: .top) {
                 if front && offset.height > abs(offset.width) {
                     Label("Add to Album", systemImage: "rectangle.stack.badge.plus")
@@ -313,10 +325,11 @@ struct ContentView: View {
             .zIndex(Double(3 - depth))
             .allowsHitTesting(front && !isDismissing)
             .accessibilityHidden(!front)
-            .gesture(swipeGesture(for: asset, size: size))
+            .contentShape(RoundedRectangle(cornerRadius: 28))
+            .highPriorityGesture(swipeGesture(for: asset, size: size))
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
-            .accessibilityAction(named: Text("Add to album")) { albumTarget = MediaSelection(asset: asset) }
+            .accessibilityAction(named: Text("Add to album")) { openAlbums(for: asset) }
             .accessibilityAction(named: Text("Keep")) { decide(asset, keep: true, size: size) }
             .accessibilityAction(named: Text("Move to Recently Removed")) { decide(asset, keep: false, size: size) }
     }
@@ -342,16 +355,23 @@ struct ContentView: View {
                 let projected = value.predictedEndTranslation
                 let horizontal = abs(actual.width) > abs(actual.height)
                 let crossed = abs(actual.width) > 90 || (abs(actual.width) > 25 && abs(projected.width) > 180)
-                if horizontal && crossed {
+                if actual.height > abs(actual.width) * 0.85 &&
+                    (actual.height > 64 || (actual.height > 24 && projected.height > 140)) {
+                    openAlbums(for: asset)
+                } else if horizontal && crossed {
                     decide(asset, keep: actual.width > 0, size: size)
-                } else if !horizontal && actual.height > 0 &&
-                            (actual.height > 90 || (actual.height > 25 && projected.height > 180)) {
-                    withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
-                    albumTarget = MediaSelection(asset: asset)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
                 }
             }
+    }
+
+    private func openAlbums(for asset: PHAsset) {
+        guard !isDismissing, !isUpdatingFavorite else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
+            offset = .zero
+        }
+        albumTarget = MediaSelection(asset: asset)
     }
 
     private func decide(_ asset: PHAsset, keep: Bool, size: CGSize) {
@@ -442,6 +462,8 @@ private struct CollectionBrowser: View {
     @State private var anchor: Int?
     @State private var dragBase: Set<String> = []
     @State private var dragAdds = true
+    @State private var dragLocation: CGPoint?
+    @GestureState private var selectionTouchActive = false
     @State private var deletion: DeletionRequest?
     @State private var isDeleting = false
     @State private var errorMessage: String?
@@ -463,10 +485,16 @@ private struct CollectionBrowser: View {
                         }
                     }
                     .padding(.vertical, 8)
+                    .background(SelectionAutoScroller(location: dragLocation, active: anchor != nil && selectionTouchActive))
                 }
             }
-            .coordinateSpace(name: "collectionViewport")
-            .onPreferenceChange(CollectionFrames.self) { frames = $0 }
+            .onPreferenceChange(CollectionFrames.self) { updated in
+                frames = updated
+                if let location = dragLocation { updateSelection(at: location) }
+            }
+            .onChange(of: selectionTouchActive) { _, active in
+                if !active { endSelectionDrag() }
+            }
             .scrollDisabled(anchor != nil)
             .simultaneousGesture(selectionDrag)
         }
@@ -478,6 +506,7 @@ private struct CollectionBrowser: View {
             }
         }
         .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.88), value: selected.isEmpty)
+        .onDisappear { endSelectionDrag() }
         .onChange(of: library.assets.map(\.localIdentifier)) { _, _ in reconcileSelection() }
         .onChange(of: library.decisions) { _, _ in reconcileSelection() }
         .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
@@ -507,7 +536,7 @@ private struct CollectionBrowser: View {
                 if !items.isEmpty {
                     Button(isSelecting ? "Done" : "Select") {
                         isSelecting.toggle()
-                        if !isSelecting { selected.removeAll(); anchor = nil }
+                        if !isSelecting { selected.removeAll(); endSelectionDrag() }
                     }
                     .font(.subheadline.weight(.semibold)).tint(.mint)
                 }
@@ -530,7 +559,7 @@ private struct CollectionBrowser: View {
                 }
             }
             if isSelecting {
-                Text("Tap items, or drag sideways across a row to select. Scroll between gestures.")
+                Text("Drag across items to select. Hold near the top or bottom to keep scrolling.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -564,12 +593,13 @@ private struct CollectionBrowser: View {
         .accessibilityLabel(asset.mediaType == .video ? "Video" : "Photo")
         .accessibilityValue(checked ? "Selected" : "Not selected")
         .background(GeometryReader { proxy in
-            Color.clear.preference(key: CollectionFrames.self, value: [asset.localIdentifier: proxy.frame(in: .named("collectionViewport"))])
+            Color.clear.preference(key: CollectionFrames.self, value: [asset.localIdentifier: proxy.frame(in: .global)])
         })
     }
 
     private var selectionDrag: some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .named("collectionViewport"))
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .updating($selectionTouchActive) { _, active, _ in active = true }
             .onChanged { value in
                 guard isSelecting, !isDeleting else { return }
                 if anchor == nil {
@@ -580,11 +610,33 @@ private struct CollectionBrowser: View {
                     dragBase = selected
                     dragAdds = !selected.contains(items[start].localIdentifier)
                 }
-                guard let start = anchor, let end = index(at: value.location) else { return }
-                let ids = Set(items[min(start, end)...max(start, end)].map(\.localIdentifier))
-                selected = dragAdds ? dragBase.union(ids) : dragBase.subtracting(ids)
+                dragLocation = value.location
+                updateSelection(at: value.location)
             }
-            .onEnded { _ in anchor = nil; dragBase.removeAll() }
+            .onEnded { _ in endSelectionDrag() }
+    }
+
+    private func updateSelection(at point: CGPoint) {
+        guard let start = anchor, items.indices.contains(start) else { return }
+        // Nearest-cell fallback keeps selecting through grid gutters and at viewport edges.
+        let end = index(at: point) ?? items.indices.filter { frames[items[$0].localIdentifier] != nil }.min { lhs, rhs in
+            distance(to: frames[items[lhs].localIdentifier]!, from: point) < distance(to: frames[items[rhs].localIdentifier]!, from: point)
+        }
+        guard let end else { return }
+        let ids = Set(items[min(start, end)...max(start, end)].map(\.localIdentifier))
+        selected = dragAdds ? dragBase.union(ids) : dragBase.subtracting(ids)
+    }
+
+    private func distance(to rect: CGRect, from point: CGPoint) -> CGFloat {
+        let dx = max(max(rect.minX - point.x, 0), point.x - rect.maxX)
+        let dy = max(max(rect.minY - point.y, 0), point.y - rect.maxY)
+        return dx * dx + dy * dy
+    }
+
+    private func endSelectionDrag() {
+        anchor = nil
+        dragLocation = nil
+        dragBase.removeAll()
     }
 
     private func index(at point: CGPoint) -> Int? {
@@ -617,7 +669,7 @@ private struct CollectionBrowser: View {
 
     private func reconcileSelection() {
         selected.formIntersection(Set(items.map(\.localIdentifier)))
-        anchor = nil
+        endSelectionDrag()
     }
 
     private func delete(_ assets: [PHAsset]) {
@@ -632,6 +684,72 @@ private struct CollectionBrowser: View {
                 errorMessage = "Nothing was removed by the app. \(error.localizedDescription)"
             }
             isDeleting = false
+        }
+    }
+}
+
+/// Adjusts the enclosing SwiftUI scroll view every display frame while a selection
+/// finger rests near its edges. Programmatic scrolling works with scrolling disabled.
+private struct SelectionAutoScroller: UIViewRepresentable {
+    let location: CGPoint?
+    let active: Bool
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        context.coordinator.marker = view
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.location = location
+        context.coordinator.setActive(active)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.setActive(false)
+    }
+
+    final class Coordinator: NSObject {
+        weak var marker: UIView?
+        var location: CGPoint?
+        private var link: CADisplayLink?
+
+        func setActive(_ active: Bool) {
+            if active && link == nil {
+                let displayLink = CADisplayLink(target: self, selector: #selector(tick(_:)))
+                displayLink.add(to: .main, forMode: .common)
+                link = displayLink
+            } else if !active {
+                link?.invalidate()
+                link = nil
+            }
+        }
+
+        @objc private func tick(_ displayLink: CADisplayLink) {
+            guard let location, let marker, marker.window != nil else { return }
+            var ancestor = marker.superview
+            while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
+            guard let scroll = ancestor as? UIScrollView else { return }
+            let point = scroll.convert(location, from: nil)
+            let y = point.y - scroll.bounds.minY
+            let top = scroll.adjustedContentInset.top
+            let bottom = scroll.bounds.height - scroll.adjustedContentInset.bottom
+            let zone = min(CGFloat(80), (bottom - top) / 3)
+            guard zone > 0 else { return }
+            let speed: CGFloat
+            if y < top + zone { speed = -min(1, max(0, (top + zone - y) / zone)) * 480 }
+            else if y > bottom - zone { speed = min(1, max(0, (y - bottom + zone) / zone)) * 480 }
+            else { return }
+            let minimum = -scroll.adjustedContentInset.top
+            let maximum = max(minimum, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+            let dt = min(displayLink.targetTimestamp - displayLink.timestamp, 1.0 / 30.0)
+            let next = min(maximum, max(minimum, scroll.contentOffset.y + speed * CGFloat(dt)))
+            if abs(next - scroll.contentOffset.y) > 0.01 {
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: next), animated: false)
+            }
         }
     }
 }

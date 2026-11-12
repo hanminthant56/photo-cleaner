@@ -30,7 +30,7 @@ This Linux cloud workspace has no Xcode/iOS SDK. Source/configuration checks are
 
 ## Select and bulk actions
 
-In Kept or Recently Removed, tap **Select**. Tap thumbnails or start a sideways drag across a row, then continue through the grid to select a range. Starting on a selected item deselects the range. Dragging back toward the starting item contracts the range. Ordinary vertical drags scroll between selection gestures. Select All, Deselect All, and Done are also available.
+In Kept or Recently Removed, tap **Select**. Tap thumbnails or start a sideways drag across a row, then continue through the grid to select a range. Starting on a selected item deselects the range. Dragging back toward the starting item contracts the range. Ordinary vertical drags scroll between selection gestures. During an active range selection, hold near the top or bottom edge to scroll automatically; the speed increases toward the edge and selection continues through new rows. Select All, Deselect All, and Done are also available.
 
 An action tray slides up for one or more selected items. **Return to Swipe Queue** restores all selected items in one operation. Recently Removed additionally offers **Delete**. With no selection, **Delete All** targets only the current Recently Removed collection, never the Kept collection or the remaining queue.
 
@@ -62,7 +62,7 @@ Test a favorite left swipe, single-item deletion of an already-staged favorite, 
 
 Open a Kept or Recently Removed item and swipe horizontally to page through that collection. A position counter tracks the visible item; Return to Swipe Queue and Delete apply to the currently displayed item. Videos retain an explicit play button. Delete confirmation captures that item and favorites remain protected.
 
-Swipe a queue card down to open a minimal Add to Album sheet, or use its VoiceOver Add to album action. Tap an editable album to add the photo/video in Apple Photos. Smart/system/read-only albums are not listed as writable destinations. New Album asks for a nonempty name and creates the album and adds the item in one Photos transaction. A saved checkmark appears only on success. Cancel and errors leave the card in the queue; a successful album save moves the item to Kept and removes it from the queue.
+Swipe a queue card down to open a minimal Add to Album sheet, tap its bottom-left album button, or use its VoiceOver Add to album action. Tap an editable album to add the photo/video in Apple Photos. Smart/system/read-only albums are not listed as writable destinations. New Album asks for a nonempty name and creates the album and adds the item in one Photos transaction. A saved checkmark appears only on success. Cancel and errors leave the card in the queue; a successful album save moves the item to Kept and removes it from the queue.
 
 Validate on your Mac/device:
 
@@ -72,3 +72,9 @@ Validate on your Mac/device:
 - Test Cancel, an empty/whitespace name, limited photo access, no writable albums, system write denial, and VoiceOver Add to album.
 
 After an existing-album or new-album save succeeds, the confirmation reads “Added to [album name] · Kept” and the next pending card becomes available. Kept is an app collection; no extra Apple Photos album named Kept is created. Test both album-save paths, cancel/error paths, and persistence after relaunch.
+
+## Edge-selection and downward-swipe regression checks
+
+With several screenfuls of Kept/Recently Removed media, enter Select, start a sideways range drag, and hold near the bottom edge without lifting. Confirm new rows scroll into view and become selected. Move toward the center to stop scrolling, then the top edge to reverse. Lift, cancel, leave the collection, or tap Done: scrolling must stop. Verify range deselection and reversing toward the anchor preserve pre-existing selections. Test both the first/last rows, large text, the action tray appearing, and Reduce Motion.
+
+On the queue, test slow downward drags past 64 points and quick downward flicks, including slightly diagonal movements. The album picker should open. Short drags must snap back; left/right sorting and video play taps must still work. Verify the new album button opens the same picker and successful saves still move the item to Kept.

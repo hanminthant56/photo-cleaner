@@ -11,7 +11,7 @@ Open `PhotoCleaner.xcodeproj`, select your signing team for a physical iPhone, s
 - Tap Choose Photo Access. Choose full access for the whole library, or selected access for a subset. Denied/restricted access shows a Settings button; limited access is indicated in the app.
 - The queue contains accessible, undecided photos and videos, newest first. Cards use an approximately 5:7 portrait frame, adapting to the screen. Media fits inside the frame without cropping.
 - Swipe left to stage an item in **Recently Removed**. Swipe right to add it to **Kept**. Both remove the item from the queue. A red trash badge / green heart badge follows the drag, with a light haptic on commit.
-- Short drags snap back. Up/down drags return to place without a decision. Double-taps toggle Favorites in Apple Photos without sorting the item. A spring heart/sparkle animation confirms adding a favorite, and a mint outlined heart gently shrinks and fades to confirm removal. A bottom-right heart badge marks existing favorites. The animation appears only after the Photos update succeeds.
+- Short drags snap back. Upward drags return to place without a decision. Downward swipes open Add to Album. Double-taps toggle Favorites in Apple Photos without sorting the item. A spring heart/sparkle animation confirms adding a favorite, and a mint outlined heart gently shrinks and fades to confirm removal. A bottom-right heart badge marks existing favorites. The animation appears only after the Photos update succeeds.
 - Tap the play button once to open and play a video, including iCloud media when available. Dismissing playback pauses it.
 - The title's three-dot menu selects **All Photos** (the remaining queue), **Kept**, or **Recently Removed**. Collections use a grid; tap an item to inspect/play it or return it to the queue.
 - Decisions are stored locally on this installation using Photos asset identifiers and survive relaunches. These collections are app-only, not albums created in Apple Photos. Swiping does not delete or modify originals. Double-tapping changes their Apple Photos favorite flag. Recently Removed offers explicit, confirmed deletion through Apple Photos. Uninstalling the app resets its decisions.
@@ -57,3 +57,16 @@ Test on a disposable set of media on a simulator/device:
 Left-swiping a favorite returns the card to place and asks you to remove its favorite status first (double-tap the card). Single-item Delete, selected Delete, and Delete All also re-fetch the current Photos assets and reject the entire request if any target is a favorite. No non-favorite items in a mixed request are deleted. Remove the favorite heart in Apple Photos, or restore the item to the swipe queue and double-tap it, then retry.
 
 Test a favorite left swipe, single-item deletion of an already-staged favorite, and a mixed favorite/non-favorite Delete All. Verify an error appears, no items move/delete, and selection remains. Remove the favorite flag and confirm the same operation succeeds.
+
+## Paging and albums
+
+Open a Kept or Recently Removed item and swipe horizontally to page through that collection. A position counter tracks the visible item; Return to Swipe Queue and Delete apply to the currently displayed item. Videos retain an explicit play button. Delete confirmation captures that item and favorites remain protected.
+
+Swipe a queue card down to open a minimal Add to Album sheet, or use its VoiceOver Add to album action. Tap an editable album to add the photo/video in Apple Photos. Smart/system/read-only albums are not listed as writable destinations. New Album asks for a nonempty name and creates the album and adds the item in one Photos transaction. A saved checkmark appears only on success. Cancel and errors leave the card in the queue; adding to an album also keeps it in the queue so it can still be kept or removed later.
+
+Validate on your Mac/device:
+
+- Open a middle item in each collection; swipe both ways and verify the counter, photos, video play buttons, and current-item restore/delete behavior. Check both ends of the collection.
+- Swipe a photo and video down. Add each to an existing album and verify it in Apple Photos. Repeat adding to the same album; there should be no duplicated asset.
+- Create an album, verify both its name and contents in Apple Photos, and confirm the source card stays in the queue.
+- Test Cancel, an empty/whitespace name, limited photo access, no writable albums, system write denial, and VoiceOver Add to album.

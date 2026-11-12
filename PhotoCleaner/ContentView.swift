@@ -101,6 +101,35 @@ private final class PhotoLibrary: ObservableObject {
         return favorite
     }
 
+    func editableAlbums() -> [PHAssetCollection] {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "localizedTitle", ascending: true)]
+        let fetched = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: options)
+        var albums: [PHAssetCollection] = []
+        fetched.enumerateObjects { album, _, _ in
+            if album.canPerform(.addContent) { albums.append(album) }
+        }
+        return albums
+    }
+
+    func add(_ asset: PHAsset, to album: PHAssetCollection) async throws {
+        guard album.canPerform(.addContent) else {
+            throw NSError(domain: "PhotoCleaner", code: 3, userInfo: [NSLocalizedDescriptionKey: "This album can’t be edited. Choose another album."])
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetCollectionChangeRequest(for: album)?.addAssets([asset] as NSArray)
+        }
+    }
+
+    func createAlbum(named name: String, adding asset: PHAsset) async throws {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: title)
+            request.addAssets([asset] as NSArray)
+        }
+    }
+
     private func rebuildQueue() {
         pending = assets.filter { decisions[$0.localIdentifier] == nil }
     }
@@ -120,6 +149,7 @@ struct ContentView: View {
     @State private var isDismissing = false
     @State private var playing: MediaSelection?
     @State private var inspected: MediaSelection?
+    @State private var albumTarget: MediaSelection?
     @State private var heartFeedback: HeartFeedback?
     @State private var isUpdatingFavorite = false
     @State private var photoActionError: String?
@@ -158,10 +188,10 @@ struct ContentView: View {
         } message: { Text(photoActionError ?? "Please try again.") }
         .sheet(item: $playing) { selection in VideoPlayback(asset: selection.asset) }
         .sheet(item: $inspected) { selection in
-            MediaDetail(library: library, asset: selection.asset) {
-                library.restore(selection.asset)
-                inspected = nil
-            }
+            CollectionDetail(library: library, section: section, initialID: selection.id)
+        }
+        .sheet(item: $albumTarget) { selection in
+            AlbumPicker(library: library, asset: selection.asset)
         }
     }
 
@@ -227,7 +257,7 @@ struct ContentView: View {
                 Spacer(minLength: 8)
                 if !library.pending.isEmpty {
                     deck(size: CGSize(width: width, height: height))
-                    Text("Left to remove · Right to keep")
+                    Text("Left to remove · Right to keep · Down for albums")
                         .font(.caption).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 } else {
@@ -259,6 +289,15 @@ struct ContentView: View {
             .overlay(alignment: removing ? .topTrailing : .topLeading) {
                 if front { decisionBadge.opacity(Double(progress)).padding(20) }
             }
+            .overlay(alignment: .top) {
+                if front && offset.height > abs(offset.width) {
+                    Label("Add to Album", systemImage: "rectangle.stack.badge.plus")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(12).background(.regularMaterial, in: Capsule())
+                        .padding(.top, 20)
+                        .opacity(Double(min(offset.height / 90, 1)))
+                }
+            }
             .overlay {
                 if front, let heartFeedback {
                     HeartCelebration(favorite: heartFeedback.favorite)
@@ -277,6 +316,7 @@ struct ContentView: View {
             .gesture(swipeGesture(for: asset, size: size))
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
+            .accessibilityAction(named: Text("Add to album")) { albumTarget = MediaSelection(asset: asset) }
             .accessibilityAction(named: Text("Keep")) { decide(asset, keep: true, size: size) }
             .accessibilityAction(named: Text("Move to Recently Removed")) { decide(asset, keep: false, size: size) }
     }
@@ -304,6 +344,10 @@ struct ContentView: View {
                 let crossed = abs(actual.width) > 90 || (abs(actual.width) > 25 && abs(projected.width) > 180)
                 if horizontal && crossed {
                     decide(asset, keep: actual.width > 0, size: size)
+                } else if !horizontal && actual.height > 0 &&
+                            (actual.height > 90 || (actual.height > 25 && projected.height > 180)) {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
+                    albumTarget = MediaSelection(asset: asset)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
                 }
@@ -702,46 +746,69 @@ private struct VideoPlayback: View {
     }
 }
 
-private struct MediaDetail: View {
+private struct CollectionDetail: View {
     @ObservedObject var library: PhotoLibrary
-    let asset: PHAsset
-    let restore: () -> Void
+    let section: LibrarySection
     @Environment(\.dismiss) private var dismiss
-    @State private var playing = false
-    @State private var confirmDelete = false
+    @State private var currentID: String
+    @State private var playing: MediaSelection?
+    @State private var confirmation: MediaSelection?
     @State private var isDeleting = false
     @State private var deletionError: String?
 
-    private var canDelete: Bool {
-        library.decisions[asset.localIdentifier] == LibrarySection.removed.rawValue
+    init(library: PhotoLibrary, section: LibrarySection, initialID: String) {
+        self.library = library
+        self.section = section
+        _currentID = State(initialValue: initialID)
+    }
+
+    private var items: [PHAsset] { library.items(in: section) }
+    private var current: PHAsset? { items.first { $0.localIdentifier == currentID } }
+    private var position: String {
+        guard let index = items.firstIndex(where: { $0.localIdentifier == currentID }) else { return "" }
+        return "\(index + 1) of \(items.count)"
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                AssetThumbnail(asset: asset, target: CGSize(width: 1200, height: 1600))
-                if asset.mediaType == .video {
-                    Button("Play video", systemImage: "play.fill") { playing = true }
+            VStack(spacing: 16) {
+                TabView(selection: $currentID) {
+                    ForEach(items, id: \.localIdentifier) { asset in
+                        detailPage(asset).tag(asset.localIdentifier)
+                    }
                 }
-                Button("Return to Swipe Queue", action: restore).buttonStyle(.bordered)
-                if canDelete {
-                    Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .disabled(isDeleting || confirmation != nil)
+                Text(position).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if let current {
+                    Button("Return to Swipe Queue", systemImage: "arrow.uturn.backward") {
+                        library.restore(current)
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+                    if section == .removed {
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            confirmation = MediaSelection(asset: current)
+                        }
                         .buttonStyle(.bordered).tint(.red)
+                    }
                 }
             }
+            .padding(.vertical, 16)
             .disabled(isDeleting)
-            .padding()
-            .navigationTitle(asset.mediaType == .video ? "Video" : "Photo")
+            .navigationTitle(section.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
         .interactiveDismissDisabled(isDeleting)
-        .sheet(isPresented: $playing) { VideoPlayback(asset: asset) }
-        .confirmationDialog("Delete from Apple Photos?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { deleteItem() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
+        .sheet(item: $playing) { VideoPlayback(asset: $0.asset) }
+        .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
+            get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
+        ), titleVisibility: .visible, presenting: confirmation) { selection in
+            Button("Delete", role: .destructive) { deleteItem(selection.asset) }
+            Button("Cancel", role: .cancel) { confirmation = nil }
+        } message: { _ in
             Text("This item will be deleted from your iPhone library and synced devices. Apple Photos normally keeps it in Recently Deleted for 30 days.")
         }
         .alert("Couldn’t delete item", isPresented: Binding(
@@ -751,17 +818,118 @@ private struct MediaDetail: View {
         } message: { Text(deletionError ?? "Please try again.") }
     }
 
-    private func deleteItem() {
-        guard !isDeleting, canDelete else { return }
+    private func detailPage(_ asset: PHAsset) -> some View {
+        ZStack {
+            AssetThumbnail(asset: asset, target: CGSize(width: 1200, height: 1600))
+                .padding(.horizontal, 16)
+            if asset.mediaType == .video {
+                Button { playing = MediaSelection(asset: asset) } label: {
+                    Image(systemName: "play.fill").font(.title)
+                        .frame(width: 68, height: 68).background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain).accessibilityLabel("Play video")
+            }
+        }
+    }
+
+    private func deleteItem(_ asset: PHAsset) {
+        guard !isDeleting, section == .removed else { return }
         isDeleting = true
+        confirmation = nil
         Task { @MainActor in
             do {
                 try await library.deleteRemoved([asset])
                 dismiss()
-            } catch {
-                deletionError = error.localizedDescription
-            }
+            } catch { deletionError = error.localizedDescription }
             isDeleting = false
+        }
+    }
+}
+
+private struct AlbumPicker: View {
+    @ObservedObject var library: PhotoLibrary
+    let asset: PHAsset
+    @Environment(\.dismiss) private var dismiss
+    @State private var albums: [PHAssetCollection] = []
+    @State private var creating = false
+    @State private var title = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var saved = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button { title = ""; creating = true } label: {
+                    Label("New Album", systemImage: "plus")
+                        .font(.body.weight(.medium)).foregroundStyle(.mint)
+                        .padding(.vertical, 8)
+                }
+                Section {
+                    ForEach(albums, id: \.localIdentifier) { album in
+                        Button { save(to: album) } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "rectangle.stack").foregroundStyle(.secondary)
+                                Text(album.localizedTitle ?? "Untitled Album").foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "plus").font(.caption).foregroundStyle(.tertiary)
+                            }.padding(.vertical, 8)
+                        }
+                    }
+                } header: { Text("Your albums") }
+                if albums.isEmpty {
+                    Text("Create an album to give this memory a home.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Add to Album")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isSaving) } }
+            .disabled(isSaving)
+            .overlay {
+                if isSaving {
+                    VStack(spacing: 12) {
+                        if saved { Image(systemName: "checkmark").font(.title2).foregroundStyle(.mint) }
+                        else { ProgressView() }
+                        Text(saved ? "Added to album" : "Saving…").font(.subheadline.weight(.medium))
+                    }.padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(isSaving)
+        .task { albums = library.editableAlbums() }
+        .alert("New Album", isPresented: $creating) {
+            TextField("Album name", text: $title)
+            Button("Create & Add") { save(to: nil) }
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Create an album in Apple Photos and add this item.") }
+        .alert("Couldn’t add to album", isPresented: Binding(
+            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: { Text(errorMessage ?? "Please try again.") }
+    }
+
+    private func save(to album: PHAssetCollection?) {
+        guard !isSaving else { return }
+        isSaving = true
+        Task { @MainActor in
+            do {
+                if let album { try await library.add(asset, to: album) }
+                else { try await library.createAlbum(named: title, adding: asset) }
+                withAnimation(.easeInOut(duration: 0.2)) { saved = true }
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                try? await Task.sleep(for: .milliseconds(650))
+                dismiss()
+            } catch {
+                isSaving = false
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

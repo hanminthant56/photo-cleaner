@@ -17,7 +17,7 @@ No third-party dependencies or installation step is required.
 - Drag a card left, right, up, and down: its badge follows the dominant direction. Release past 90 points to advance to the next card.
 - Try a short slow drag: the card springs back without advancing.
 - Flick a card: the projected movement can advance it after at least 25 points of actual movement.
-- Double-tap the card: it flips to its details. Double-tap again to return. The next card starts on its front face.
+- Double-tap the card: a brief “Double-tapped” message appears. The card stays in place and does not flip.
 - Tap each arrow button: it performs the corresponding swipe. Inputs are locked during dismissal.
 - Swipe through all four designs: the deck repeats.
 - Enable Reduce Motion and VoiceOver: use the labeled arrow buttons to advance cards.

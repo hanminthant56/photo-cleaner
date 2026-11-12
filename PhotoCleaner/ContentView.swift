@@ -37,7 +37,7 @@ struct ContentView: View {
     @State private var cardIndex = 0
     @State private var lastDirection: SwipeDirection?
     @State private var isDismissing = false
-    @State private var isShowingDetails = false
+    @State private var didDoubleTap = false
 
     private let cards: [(title: String, subtitle: String, symbol: String, colors: [Color])] = [
         ("Find your flow", "A little movement. A new perspective.", "water.waves", [.cyan, .blue, .indigo]),
@@ -64,7 +64,7 @@ struct ContentView: View {
                     Image(systemName: "square.stack.3d.up.fill")
                         .font(.title2).foregroundStyle(.mint)
                 }
-                Text("Swipe in four directions. Double-tap to flip.")
+                Text("Swipe up, down, left, or right.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -72,8 +72,7 @@ struct ContentView: View {
                 ZStack {
                     card(at: cardIndex + 1)
                         .scaleEffect(0.93).offset(y: 15).opacity(0.5)
-                    card(at: cardIndex, showDetails: isShowingDetails)
-                        .rotation3DEffect(.degrees(isShowingDetails ? 180 : 0), axis: (x: 0, y: 1, z: 0))
+                    card(at: cardIndex)
                         .overlay(alignment: .topLeading) {
                             if let direction = activeDirection {
                                 Label(direction.rawValue.uppercased(), systemImage: direction.symbol)
@@ -101,10 +100,10 @@ struct ContentView: View {
                                     withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { offset = .zero }
                                 }
                             })
-                        .simultaneousGesture(TapGesture(count: 2).onEnded { toggleDetails() })
-                        .accessibilityAction(named: Text("Flip card")) { toggleDetails() }
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { registerDoubleTap() })
+                        .accessibilityAction(named: Text("Double-tap card")) { registerDoubleTap() }
                         .accessibilityLabel("\(cards[cardIndex % cards.count].title). Card \(cardIndex + 1)")
-                        .accessibilityHint("Double-tap to flip the card, or use the direction buttons below to move it.")
+                        .accessibilityHint("Swipe in any direction or use the direction buttons below. Double-tap for feedback.")
                 }
                 .frame(height: cardHeight)
                 .zIndex(1)
@@ -112,7 +111,7 @@ struct ContentView: View {
 
                 HStack(spacing: 10) {
                     Circle().fill(lastDirection?.color ?? .mint).frame(width: 6, height: 6)
-                    Text(lastDirection.map { "Swiped \($0.rawValue.lowercased()) · Keep exploring" } ?? "Pick a direction to get started")
+                    Text(didDoubleTap ? "Double-tapped" : lastDirection.map { "Swiped \($0.rawValue.lowercased()) · Keep exploring" } ?? "Pick a direction to get started")
                         .font(.caption).foregroundStyle(.secondary)
                         .accessibilityAddTraits(.updatesFrequently)
                 }
@@ -129,7 +128,7 @@ struct ContentView: View {
                         .disabled(isDismissing)
                     }
                 }
-                Text("SWIPE TO EXPLORE. DOUBLE-TAP TO FLIP.")
+                Text("SWIPE UP. DOWN. LEFT. RIGHT.")
                     .font(.system(size: 9, weight: .semibold)).tracking(2).foregroundStyle(.secondary)
             }
             .padding(24)
@@ -140,13 +139,13 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func card(at index: Int, showDetails: Bool = false) -> some View {
+    private func card(at index: Int) -> some View {
         let item = cards[index % cards.count]
         return ZStack {
             RoundedRectangle(cornerRadius: 32)
                 .fill(LinearGradient(colors: item.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
             Circle().fill(.white.opacity(0.08)).frame(width: 240, height: 240).offset(x: 100, y: -110)
-            Image(systemName: showDetails ? "hand.tap.fill" : item.symbol)
+            Image(systemName: item.symbol)
                 .font(.system(size: 110, weight: .ultraLight)).foregroundStyle(.white.opacity(0.8))
                 .offset(y: -30)
             VStack(alignment: .leading, spacing: 10) {
@@ -156,20 +155,21 @@ struct ContentView: View {
                     Text(String(format: "%02d", index + 1)).font(.caption.monospaced())
                 }
                 Spacer()
-                Text(showDetails ? "A fresh perspective" : item.title).font(.system(size: 32, weight: .bold, design: .rounded))
-                Text(showDetails ? "Swipe up, down, left, or right to discover the next card. Double-tap to return to the front." : item.subtitle).font(.subheadline).foregroundStyle(.white.opacity(0.8))
+                Text(item.title).font(.system(size: 32, weight: .bold, design: .rounded))
+                Text(item.subtitle).font(.subheadline).foregroundStyle(.white.opacity(0.8))
             }.padding(26)
         }
-        .rotation3DEffect(.degrees(showDetails ? 180 : 0), axis: (x: 0, y: 1, z: 0))
         .clipShape(RoundedRectangle(cornerRadius: 32))
         .overlay(RoundedRectangle(cornerRadius: 32).strokeBorder(.white.opacity(0.18)))
         .shadow(color: .black.opacity(0.25), radius: 20, y: 12)
     }
 
-    private func toggleDetails() {
+    private func registerDoubleTap() {
         guard !isDismissing, offset == .zero else { return }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
-            isShowingDetails.toggle()
+        didDoubleTap = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            didDoubleTap = false
         }
     }
 
@@ -192,7 +192,7 @@ struct ContentView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 cardIndex += 1
-                isShowingDetails = false
+                didDoubleTap = false
                 offset = .zero
                 lastDirection = direction
                 isDismissing = false

@@ -35,18 +35,7 @@ struct ContentView: View {
         GeometryReader { geometry in
             let cardHeight = min(440.0, max(180.0, geometry.size.height * 0.54))
             VStack(spacing: 20) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("PLAY / EXPLORE").font(.caption2.weight(.bold)).tracking(3).foregroundStyle(.mint)
-                        Text("Go your own way.").font(.largeTitle.bold()).tracking(-1)
-                    }
-                    Spacer()
-                    Image(systemName: "square.stack.3d.up.fill")
-                        .font(.title2).foregroundStyle(.mint)
-                }
-                Text("Swipe up, down, left, or right.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                TabPageTitle(title: "Swipe")
 
                 Spacer(minLength: 0)
                 cardStack
@@ -227,5 +216,21 @@ private struct FloatingTabGlass: ViewModifier {
             .background(.ultraThinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
             .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
+    }
+}
+
+/// Shared header for each tab: change only the title when adding another screen.
+struct TabPageTitle: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+            .tracking(-0.8)
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+            .accessibilityAddTraits(.isHeader)
     }
 }

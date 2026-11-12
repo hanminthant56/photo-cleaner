@@ -23,10 +23,13 @@ private final class PhotoLibrary: ObservableObject {
     @Published var decisions: [String: String]
     @Published var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var pending: [PHAsset] = []
+    @Published private(set) var recentAlbum: PHAssetCollection?
+    private let recentAlbumKey = "PhotoCleaner.recentAlbum.v1"
     private let storageKey = "PhotoCleaner.decisions.v1"
 
     init() {
         decisions = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        refreshRecentAlbum()
     }
 
     var hasAccess: Bool { authorization == .authorized || authorization == .limited }
@@ -52,6 +55,7 @@ private final class PhotoLibrary: ObservableObject {
         result.enumerateObjects { asset, _, _ in loaded.append(asset) }
         assets = loaded
         rebuildQueue()
+        refreshRecentAlbum()
     }
 
     func decide(_ asset: PHAsset, section: LibrarySection) {
@@ -119,15 +123,31 @@ private final class PhotoLibrary: ObservableObject {
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetCollectionChangeRequest(for: album)?.addAssets([asset] as NSArray)
         }
+        rememberAlbum(album.localIdentifier)
     }
 
     func createAlbum(named name: String, adding asset: PHAsset) async throws {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
+        var createdID: String?
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: title)
             request.addAssets([asset] as NSArray)
+            createdID = request.placeholderForCreatedAssetCollection.localIdentifier
         }
+        if let createdID { rememberAlbum(createdID) }
+    }
+
+    func refreshRecentAlbum() {
+        guard hasAccess else { recentAlbum = nil; return }
+        guard let id = UserDefaults.standard.string(forKey: recentAlbumKey) else { recentAlbum = nil; return }
+        let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
+        recentAlbum = album?.canPerform(.addContent) == true ? album : nil
+    }
+
+    private func rememberAlbum(_ id: String) {
+        UserDefaults.standard.set(id, forKey: recentAlbumKey)
+        refreshRecentAlbum()
     }
 
     private func rebuildQueue() {
@@ -152,6 +172,8 @@ struct ContentView: View {
     @State private var albumTarget: MediaSelection?
     @State private var heartFeedback: HeartFeedback?
     @State private var isUpdatingFavorite = false
+    @State private var isSavingAlbum = false
+    @State private var albumNotice: String?
     @State private var photoActionError: String?
 
     private var progress: CGFloat { min(abs(offset.width) / 180, 1) }
@@ -177,6 +199,20 @@ struct ContentView: View {
         .foregroundStyle(.white)
         .safeAreaInset(edge: .bottom) { swipeTab.padding(.vertical, 8) }
         .preferredColorScheme(.dark)
+        .overlay(alignment: .top) {
+            if let albumNotice {
+                Label(albumNotice, systemImage: "checkmark")
+                    .font(.caption.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    .padding(12).background(.regularMaterial, in: Capsule())
+                    .padding(.horizontal, 32).padding(.top, 72)
+                    .allowsHitTesting(false)
+            }
+        }
+        .task(id: albumNotice) {
+            guard albumNotice != nil else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            albumNotice = nil
+        }
         .task { library.refresh() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !isDismissing { library.refresh() }
@@ -202,7 +238,7 @@ struct ContentView: View {
             Menu {
                 ForEach(LibrarySection.allCases, id: \.self) { item in
                     Button {
-                        guard !isDismissing, !isUpdatingFavorite else { return }
+                        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
                         section = item
                         offset = .zero
                     } label: {
@@ -257,7 +293,7 @@ struct ContentView: View {
                 Spacer(minLength: 8)
                 if !library.pending.isEmpty {
                     deck(size: CGSize(width: width, height: height))
-                    Text("Left to remove · Right to keep · Down for albums")
+                    Text("Left to remove · Right to keep · ↓ Choose · ↑ Repeat")
                         .font(.caption).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 } else {
@@ -314,6 +350,21 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if front && -offset.height > abs(offset.width) {
+                    Label(library.recentAlbum.map { "Add to \($0.localizedTitle ?? "Album")" } ?? "Choose Album", systemImage: "rectangle.stack.badge.plus")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                        .padding(12).frame(maxWidth: min(size.width - 48, 280))
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 72)
+                        .opacity(Double(min(-offset.height / 64, 1)))
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                if front && isSavingAlbum { ProgressView("Adding to album…").padding(18).background(.regularMaterial, in: Capsule()) }
+            }
             .overlay {
                 if front, let heartFeedback {
                     HeartCelebration(favorite: heartFeedback.favorite)
@@ -327,13 +378,14 @@ struct ContentView: View {
             .offset(front ? offset : .zero)
             .rotationEffect(.degrees(front && !reduceMotion ? Double(offset.width / 45) : 0))
             .zIndex(Double(3 - depth))
-            .allowsHitTesting(front && !isDismissing)
+            .allowsHitTesting(front && !isDismissing && !isSavingAlbum)
             .accessibilityHidden(!front)
             .contentShape(RoundedRectangle(cornerRadius: 28))
             .highPriorityGesture(swipeGesture(for: asset, size: size))
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
             .accessibilityAction(named: Text("Add to album")) { openAlbums(for: asset) }
+            .accessibilityAction(named: Text("Add to last album")) { reuseAlbum(for: asset, size: size) }
             .accessibilityAction(named: Text("Keep")) { decide(asset, keep: true, size: size) }
             .accessibilityAction(named: Text("Move to Recently Removed")) { decide(asset, keep: false, size: size) }
     }
@@ -350,11 +402,11 @@ struct ContentView: View {
     private func swipeGesture(for asset: PHAsset, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("swipeDeck"))
             .onChanged { value in
-                guard !isDismissing, !isUpdatingFavorite else { return }
+                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
                 offset = value.translation
             }
             .onEnded { value in
-                guard !isDismissing, !isUpdatingFavorite else { return }
+                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
                 let actual = value.translation
                 let projected = value.predictedEndTranslation
                 let horizontal = abs(actual.width) > abs(actual.height)
@@ -362,6 +414,9 @@ struct ContentView: View {
                 if actual.height > abs(actual.width) * 0.85 &&
                     (actual.height > 64 || (actual.height > 24 && projected.height > 140)) {
                     openAlbums(for: asset)
+                } else if -actual.height > abs(actual.width) * 0.85 &&
+                    (-actual.height > 64 || (-actual.height > 24 && projected.height < -140)) {
+                    reuseAlbum(for: asset, size: size)
                 } else if horizontal && crossed {
                     decide(asset, keep: actual.width > 0, size: size)
                 } else {
@@ -371,15 +426,49 @@ struct ContentView: View {
     }
 
     private func openAlbums(for asset: PHAsset) {
-        guard !isDismissing, !isUpdatingFavorite else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
         withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
             offset = .zero
         }
         albumTarget = MediaSelection(asset: asset)
     }
 
+    private func reuseAlbum(for asset: PHAsset, size: CGSize) {
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+        library.refreshRecentAlbum()
+        guard let album = library.recentAlbum else {
+            openAlbums(for: asset)
+            return
+        }
+        isSavingAlbum = true
+        Task { @MainActor in
+            do {
+                try await library.add(asset, to: album)
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25), completionCriteria: .removed) {
+                    offset = CGSize(width: 0, height: -size.height - 150)
+                } completion: {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        library.decide(asset, section: .kept)
+                        offset = .zero
+                        heartFeedback = nil
+                        isSavingAlbum = false
+                    }
+                    albumNotice = "Added to \(album.localizedTitle ?? "Album") · Kept"
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            } catch {
+                isSavingAlbum = false
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { offset = .zero }
+                photoActionError = error.localizedDescription
+                library.refreshRecentAlbum()
+            }
+        }
+    }
+
     private func decide(_ asset: PHAsset, keep: Bool, size: CGSize) {
-        guard !isDismissing, !isUpdatingFavorite else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
         if !keep {
             let current = PHAsset.fetchAssets(withLocalIdentifiers: [asset.localIdentifier], options: nil).firstObject
             if current?.isFavorite == true {
@@ -424,7 +513,7 @@ struct ContentView: View {
     }
 
     private func toggleFavorite(_ asset: PHAsset) {
-        guard !isDismissing, !isUpdatingFavorite, offset == .zero else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, offset == .zero else { return }
         isUpdatingFavorite = true
         Task { @MainActor in
             do {

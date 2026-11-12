@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum SwipeDirection {
-    case left = "Left", right = "Right", up = "Up", down = "Down"
+    case left, right, up, down
 
     var destination: CGSize {
         switch self {
@@ -49,47 +49,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Spacer(minLength: 0)
-                ZStack {
-                    ForEach(Array((cardIndex...cardIndex + 2).reversed()), id: \.self) { index in
-                        let depth = index - cardIndex
-                        card(at: index)
-                            .scaleEffect(depth == 0 ? 1 : 1 - CGFloat(depth) * 0.05 + revealProgress * 0.05)
-                            .offset(y: depth == 0 ? 0 : CGFloat(depth) * 14 - revealProgress * 14)
-                            .opacity(depth == 0 ? 1 : 1 - Double(depth) * 0.15 + Double(revealProgress) * 0.15)
-                            .offset(depth == 0 ? offset : .zero)
-                            .rotationEffect(.degrees(depth == 0 && !reduceMotion ? Double(offset.width / 35) : 0))
-                            .overlay(RoundedRectangle(cornerRadius: 32).strokeBorder(.white.opacity(didDoubleTap && depth == 0 ? 0.65 : 0), lineWidth: 2))
-                            .zIndex(Double(3 - depth))
-                            .allowsHitTesting(depth == 0 && !isDismissing)
-                            .accessibilityHidden(depth != 0)
-                            .gesture(DragGesture(minimumDistance: 10)
-                                .onChanged { value in
-                                    guard !isDismissing else { return }
-                                    offset = value.translation
-                                }
-                                .onEnded { value in
-                                    guard !isDismissing else { return }
-                                    let actual = value.translation
-                                    let predicted = value.predictedEndTranslation
-                                    if max(abs(actual.width), abs(actual.height)) > 90 {
-                                        dismiss(direction(for: actual))
-                                    } else if max(abs(actual.width), abs(actual.height)) > 25 && max(abs(predicted.width), abs(predicted.height)) > 180 {
-                                        dismiss(direction(for: predicted))
-                                    } else {
-                                        withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)) {
-                                            offset = .zero
-                                        }
-                                    }
-                                })
-                            .simultaneousGesture(TapGesture(count: 2).onEnded { registerDoubleTap() })
-                            .accessibilityLabel("\(cards[index % cards.count].title). Card \(index + 1)")
-                            .accessibilityHint("Swipe in any direction to advance.")
-                            .accessibilityAction(named: Text("Swipe left")) { dismiss(.left) }
-                            .accessibilityAction(named: Text("Swipe right")) { dismiss(.right) }
-                            .accessibilityAction(named: Text("Swipe up")) { dismiss(.up) }
-                            .accessibilityAction(named: Text("Swipe down")) { dismiss(.down) }
-                    }
-                }
+                cardStack
                 .frame(height: cardHeight)
                 .zIndex(1)
                 Spacer(minLength: 0)
@@ -106,6 +66,73 @@ struct ContentView: View {
                 .padding(.top, 12)
         }
         .preferredColorScheme(.dark)
+    }
+
+    private var cardStack: some View {
+        ZStack {
+            ForEach(Array((cardIndex...cardIndex + 2).reversed()), id: \.self) { index in
+                interactiveCard(at: index)
+            }
+        }
+    }
+
+    private func positionedCard(at index: Int) -> some View {
+        let depth = index - cardIndex
+        let isFront = depth == 0
+        let scale: CGFloat = isFront ? 1 : 1 - CGFloat(depth) * 0.05 + revealProgress * 0.05
+        let verticalOffset: CGFloat = isFront ? 0 : CGFloat(depth) * 14 - revealProgress * 14
+        let opacity: Double = isFront ? 1 : 1 - Double(depth) * 0.15 + Double(revealProgress) * 0.15
+        let angle: Double = isFront && !reduceMotion ? Double(offset.width / 35) : 0
+
+        return card(at: index)
+            .overlay {
+                RoundedRectangle(cornerRadius: 32)
+                    .strokeBorder(Color.white.opacity(didDoubleTap && isFront ? 0.65 : 0), lineWidth: 2)
+            }
+            .scaleEffect(scale)
+            .offset(y: verticalOffset)
+            .opacity(opacity)
+            .offset(isFront ? offset : CGSize.zero)
+            .rotationEffect(.degrees(angle))
+            .zIndex(Double(3 - depth))
+    }
+
+    private func interactiveCard(at index: Int) -> some View {
+        positionedCard(at: index)
+            .allowsHitTesting(index == cardIndex && !isDismissing)
+            .accessibilityHidden(index != cardIndex)
+            .gesture(swipeGesture)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { registerDoubleTap() })
+            .accessibilityLabel("\(cards[index % cards.count].title). Card \(index + 1)")
+            .accessibilityHint("Swipe in any direction to advance.")
+            .accessibilityAction(named: Text("Swipe left")) { dismiss(.left) }
+            .accessibilityAction(named: Text("Swipe right")) { dismiss(.right) }
+            .accessibilityAction(named: Text("Swipe up")) { dismiss(.up) }
+            .accessibilityAction(named: Text("Swipe down")) { dismiss(.down) }
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard !isDismissing else { return }
+                offset = value.translation
+            }
+            .onEnded { value in
+                guard !isDismissing else { return }
+                let actual = value.translation
+                let predicted = value.predictedEndTranslation
+                let distance = max(abs(actual.width), abs(actual.height))
+                let predictedDistance = max(abs(predicted.width), abs(predicted.height))
+                if distance > 90 {
+                    dismiss(direction(for: actual))
+                } else if distance > 25 && predictedDistance > 180 {
+                    dismiss(direction(for: predicted))
+                } else {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)) {
+                        offset = .zero
+                    }
+                }
+            }
     }
 
     private var swipeTab: some View {

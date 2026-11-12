@@ -71,8 +71,14 @@ private final class PhotoLibrary: ObservableObject {
 
     func deleteRemoved(_ items: [PHAsset]) async throws {
         // Only explicitly staged items may reach the system deletion request.
-        let candidates = items.filter { decisions[$0.localIdentifier] == LibrarySection.removed.rawValue }
+        let staged = items.filter { decisions[$0.localIdentifier] == LibrarySection.removed.rawValue }
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: staged.map(\.localIdentifier), options: nil)
+        var candidates: [PHAsset] = []
+        fetched.enumerateObjects { asset, _, _ in candidates.append(asset) }
         guard !candidates.isEmpty else { return }
+        guard !candidates.contains(where: { $0.isFavorite }) else {
+            throw NSError(domain: "PhotoCleaner", code: 2, userInfo: [NSLocalizedDescriptionKey: "Favorites are protected. Remove the heart in Apple Photos before deleting these items. Nothing in this selection was deleted."])
+        }
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest.deleteAssets(candidates as NSArray)
         }
@@ -116,7 +122,7 @@ struct ContentView: View {
     @State private var inspected: MediaSelection?
     @State private var heartFeedback: HeartFeedback?
     @State private var isUpdatingFavorite = false
-    @State private var favoriteError: String?
+    @State private var photoActionError: String?
 
     private var progress: CGFloat { min(abs(offset.width) / 180, 1) }
     private var removing: Bool { offset.width < 0 }
@@ -145,11 +151,11 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !isDismissing { library.refresh() }
         }
-        .alert("Couldn’t update favorite", isPresented: Binding(
-            get: { favoriteError != nil }, set: { if !$0 { favoriteError = nil } }
+        .alert("Couldn’t update photo", isPresented: Binding(
+            get: { photoActionError != nil }, set: { if !$0 { photoActionError = nil } }
         )) {
-            Button("OK", role: .cancel) { favoriteError = nil }
-        } message: { Text(favoriteError ?? "Please try again.") }
+            Button("OK", role: .cancel) { photoActionError = nil }
+        } message: { Text(photoActionError ?? "Please try again.") }
         .sheet(item: $playing) { selection in VideoPlayback(asset: selection.asset) }
         .sheet(item: $inspected) { selection in
             MediaDetail(library: library, asset: selection.asset) {
@@ -306,6 +312,15 @@ struct ContentView: View {
 
     private func decide(_ asset: PHAsset, keep: Bool, size: CGSize) {
         guard !isDismissing, !isUpdatingFavorite else { return }
+        if !keep {
+            let current = PHAsset.fetchAssets(withLocalIdentifiers: [asset.localIdentifier], options: nil).firstObject
+            if current?.isFavorite == true {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
+                photoActionError = "Favorites are protected. Double-tap the card to remove it from Favorites before swiping left."
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                return
+            }
+        }
         isDismissing = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.95), completionCriteria: .removed) {
@@ -349,7 +364,7 @@ struct ContentView: View {
                 heartFeedback = HeartFeedback(favorite: favorite)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             } catch {
-                favoriteError = error.localizedDescription
+                photoActionError = error.localizedDescription
             }
             isUpdatingFavorite = false
         }
@@ -774,17 +789,17 @@ private struct HeartCelebration: View {
                                     y: appeared ? sin(Double(index) * .pi / 3) * 75 : 0)
                     }
                 }
-                Image(systemName: favorite ? "heart.fill" : "heart.slash.fill")
+                Image(systemName: favorite ? "heart.fill" : "heart")
                     .font(.system(size: 76, weight: .semibold))
-                    .foregroundStyle(favorite ? Color.pink : Color.white)
+                    .foregroundStyle(favorite ? Color.pink : Color.mint)
                     .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
             }
-            Text(favorite ? "Added to Favorites" : "Removed from Favorites")
+            Text(favorite ? "Added to Favorites" : "Favorite removed")
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 14).padding(.vertical, 8)
                 .background(.ultraThinMaterial, in: Capsule())
         }
-        .scaleEffect(reduceMotion ? 1 : (appeared ? 1 : 0.35))
+        .scaleEffect(reduceMotion ? 1 : (appeared ? (faded && !favorite ? 0.8 : 1) : 0.35))
         .offset(y: reduceMotion ? 0 : (faded ? -32 : 0))
         .opacity(appeared && !faded ? 1 : 0)
         .task {

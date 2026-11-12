@@ -78,3 +78,9 @@ After an existing-album or new-album save succeeds, the confirmation reads “Ad
 With several screenfuls of Kept/Recently Removed media, enter Select, start a sideways range drag, and hold near the bottom edge without lifting. Confirm new rows scroll into view and become selected. Move toward the center to stop scrolling, then the top edge to reverse. Lift, cancel, leave the collection, or tap Done: scrolling must stop. Verify range deselection and reversing toward the anchor preserve pre-existing selections. Test both the first/last rows, large text, the action tray appearing, and Reduce Motion.
 
 On the queue, test slow downward drags past 64 points and quick downward flicks, including slightly diagonal movements. The album picker should open. Short drags must snap back; left/right sorting and video play taps must still work. Verify the new album button opens the same picker and successful saves still move the item to Kept.
+
+## Fixed gesture viewports
+
+Main-card drags now measure translation in the fixed `swipeDeck` space, rather than the moving card. A downward drag shows a top-centered Album badge; horizontal drags show only Keep/Remove. Verify downward drags and flicks actually open the album picker, including drags starting over the image and its empty letterbox region.
+
+The collection detail viewer uses a fixed-size, explicit three-item paging viewport instead of SwiftUI’s page-style TabView. Swipe left for the next item, right for the previous, or use the small chevron controls. At either end the image springs back. The counter and actions must track the visible item, including videos. Use Done to close; sheet swipe-to-dismiss is disabled to avoid competing gestures. Test repeated forward/backward swipes, short drags, boundary bounce, video playback, current-item restore/delete, and favorite protection.

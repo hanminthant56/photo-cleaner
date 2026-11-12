@@ -278,6 +278,7 @@ struct ContentView: View {
             }
         }
         .frame(width: size.width, height: size.height)
+        .coordinateSpace(name: "swipeDeck")
         .accessibilityElement(children: .contain)
     }
 
@@ -287,7 +288,9 @@ struct ContentView: View {
         let lift: CGFloat = front ? 0 : CGFloat(depth) * 10 - progress * 10
         return MediaCard(asset: asset, size: size) { playing = MediaSelection(asset: asset) }
             .overlay(alignment: removing ? .topTrailing : .topLeading) {
-                if front { decisionBadge.opacity(Double(progress)).padding(20) }
+                if front && abs(offset.width) >= abs(offset.height) {
+                    decisionBadge.opacity(Double(progress)).padding(20).allowsHitTesting(false)
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 if front {
@@ -303,11 +306,12 @@ struct ContentView: View {
             }
             .overlay(alignment: .top) {
                 if front && offset.height > abs(offset.width) {
-                    Label("Add to Album", systemImage: "rectangle.stack.badge.plus")
+                    Label("Album", systemImage: "rectangle.stack.badge.plus")
                         .font(.subheadline.weight(.semibold))
                         .padding(12).background(.regularMaterial, in: Capsule())
                         .padding(.top, 20)
-                        .opacity(Double(min(offset.height / 90, 1)))
+                        .opacity(Double(min(offset.height / 64, 1)))
+                        .allowsHitTesting(false)
                 }
             }
             .overlay {
@@ -344,7 +348,7 @@ struct ContentView: View {
     }
 
     private func swipeGesture(for asset: PHAsset, size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: 12, coordinateSpace: .named("swipeDeck"))
             .onChanged { value in
                 guard !isDismissing, !isUpdatingFavorite else { return }
                 offset = value.translation
@@ -873,6 +877,9 @@ private struct CollectionDetail: View {
     @State private var confirmation: MediaSelection?
     @State private var isDeleting = false
     @State private var deletionError: String?
+    @State private var pageDrag: CGFloat = 0
+    @State private var isPaging = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(library: PhotoLibrary, section: LibrarySection, initialID: String) {
         self.library = library
@@ -890,14 +897,14 @@ private struct CollectionDetail: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                TabView(selection: $currentID) {
-                    ForEach(items, id: \.localIdentifier) { asset in
-                        detailPage(asset).tag(asset.localIdentifier)
-                    }
+                pager
+                HStack(spacing: 24) {
+                    Button { pageBy(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                        .disabled(currentIndex == 0 || isPaging).accessibilityLabel("Previous item")
+                    Text(position).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Button { pageBy(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                        .disabled(currentIndex >= items.count - 1 || isPaging).accessibilityLabel("Next item")
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .disabled(isDeleting || confirmation != nil)
-                Text(position).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 if let current {
                     Button("Return to Swipe Queue", systemImage: "arrow.uturn.backward") {
                         library.restore(current)
@@ -913,13 +920,13 @@ private struct CollectionDetail: View {
                 }
             }
             .padding(.vertical, 16)
-            .disabled(isDeleting)
+            .disabled(isDeleting || isPaging)
             .navigationTitle(section.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
-        .interactiveDismissDisabled(isDeleting)
+        .interactiveDismissDisabled(true)
         .sheet(item: $playing) { VideoPlayback(asset: $0.asset) }
         .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
             get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
@@ -934,6 +941,97 @@ private struct CollectionDetail: View {
         )) {
             Button("OK", role: .cancel) { deletionError = nil }
         } message: { Text(deletionError ?? "Please try again.") }
+    }
+
+    private var currentIndex: Int {
+        items.firstIndex(where: { $0.localIdentifier == currentID }) ?? 0
+    }
+
+    private struct Page: Identifiable {
+        let asset: PHAsset
+        let index: Int
+        var id: String { asset.localIdentifier }
+    }
+
+    private var nearbyPages: [Page] {
+        let media = items
+        guard !media.isEmpty else { return [] }
+        let lower = max(0, currentIndex - 1)
+        let upper = min(media.count - 1, currentIndex + 1)
+        guard lower <= upper else { return [] }
+        return (lower...upper).map { Page(asset: media[$0], index: $0) }
+    }
+
+    private var pager: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack {
+                ForEach(nearbyPages) { entry in
+                    detailPage(entry.asset)
+                        .frame(width: width, height: geometry.size.height)
+                        .offset(x: CGFloat(entry.index - currentIndex) * width + pageDrag)
+                        .allowsHitTesting(entry.index == currentIndex && !isPaging)
+                        .accessibilityHidden(entry.index != currentIndex)
+                }
+            }
+            .frame(width: width, height: geometry.size.height)
+            .clipped()
+            .contentShape(Rectangle())
+            .coordinateSpace(name: "detailViewport")
+            .highPriorityGesture(pageGesture(width: width))
+            .accessibilityAction(named: Text("Next item")) { pageBy(1) }
+            .accessibilityAction(named: Text("Previous item")) { pageBy(-1) }
+        }
+    }
+
+    private func pageGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .named("detailViewport"))
+            .onChanged { value in
+                guard !isDeleting, !isPaging, confirmation == nil else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let translation = value.translation.width
+                let beyondEdge = (currentIndex == 0 && translation > 0) || (currentIndex == items.count - 1 && translation < 0)
+                pageDrag = beyondEdge ? translation * 0.2 : translation
+            }
+            .onEnded { value in
+                guard !isDeleting, !isPaging, confirmation == nil else { return }
+                let translation = value.translation
+                let predicted = value.predictedEndTranslation.width
+                if abs(translation.width) > abs(translation.height),
+                   abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
+                    animatePage(translation.width < 0 ? 1 : -1, width: width)
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { pageDrag = 0 }
+                }
+            }
+    }
+
+    private func animatePage(_ step: Int, width: CGFloat) {
+        let next = currentIndex + step
+        guard items.indices.contains(next), !isPaging else {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { pageDrag = 0 }
+            return
+        }
+        let nextID = items[next].localIdentifier
+        isPaging = true
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22), completionCriteria: .removed) {
+            pageDrag = -CGFloat(step) * width
+        } completion: {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                currentID = nextID
+                pageDrag = 0
+                isPaging = false
+            }
+        }
+    }
+
+    private func pageBy(_ step: Int) {
+        let next = currentIndex + step
+        guard !isDeleting, !isPaging, items.indices.contains(next) else { return }
+        currentID = items[next].localIdentifier
+        pageDrag = 0
     }
 
     private func detailPage(_ asset: PHAsset) -> some View {

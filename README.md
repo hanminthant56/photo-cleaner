@@ -14,7 +14,7 @@ Open `PhotoCleaner.xcodeproj`, select your signing team for a physical iPhone, s
 - Short drags snap back. Up/down drags return to place without a decision. Double-taps show a subtle outline without flipping or sorting.
 - Tap the play button once to open and play a video, including iCloud media when available. Dismissing playback pauses it.
 - The title's three-dot menu selects **All Photos** (the remaining queue), **Kept**, or **Recently Removed**. Collections use a grid; tap an item to inspect/play it or return it to the queue.
-- Decisions are stored locally on this installation using Photos asset identifiers and survive relaunches. These collections are app-only, not albums created in Apple Photos. No originals are deleted or modified. Uninstalling the app resets its decisions.
+- Decisions are stored locally on this installation using Photos asset identifiers and survive relaunches. These collections are app-only, not albums created in Apple Photos. Swiping does not delete or modify originals. Recently Removed offers explicit, confirmed deletion through Apple Photos. Uninstalling the app resets its decisions.
 - Returning to the app refreshes library access and media. Unavailable iCloud items display an error rather than blocking the deck.
 
 ## Device validation checklist
@@ -27,3 +27,20 @@ Open `PhotoCleaner.xcodeproj`, select your signing team for a physical iPhone, s
 6. Finish the queue, add a photo to Apple Photos, and return to the app; the new item should appear.
 
 This Linux cloud workspace has no Xcode/iOS SDK. Source/configuration checks are performed here; iOS compilation, permissions, playback, and simulator/device behavior require validation on your Mac.
+
+## Select and bulk actions
+
+In Kept or Recently Removed, tap **Select**. Tap thumbnails or start a sideways drag across a row, then continue through the grid to select a range. Starting on a selected item deselects the range. Dragging back toward the starting item contracts the range. Ordinary vertical drags scroll between selection gestures. Select All, Deselect All, and Done are also available.
+
+An action tray slides up for one or more selected items. **Return to Swipe Queue** restores all selected items in one operation. Recently Removed additionally offers **Delete**. With no selection, **Delete All** targets only the current Recently Removed collection, never the Kept collection or the remaining queue.
+
+Deletion first shows an app confirmation with the item count, then uses the Photos system deletion request. If iOS denies the request or the user cancels it, decisions and collection records remain intact and an error is shown. Only a successful request clears the deleted IDs and refreshes the library. Apple Photos normally retains deleted items in its own Recently Deleted album for 30 days; this app does not bypass that recovery period. With limited access, bulk actions include only accessible items.
+
+Test on a disposable set of media on a simulator/device:
+
+- Select/deselect individual photos and videos, paint ranges in either direction, reverse a drag, scroll and continue selecting, and test Select All/Done.
+- In Kept, select multiple items and return them to the queue; confirm they leave Kept and stay in Apple Photos.
+- In Recently Removed, cancel Delete and Delete All at the app confirmation, and cancel/deny at the iOS prompt. All app records should remain.
+- Confirm a selected deletion removes only the selected staged originals. Confirm Delete All with no selection removes only the staged collection. Verify Kept and undecided items remain in Apple Photos.
+- Check deleted items in Apple Photos’ Recently Deleted album, relaunch the app, and verify no deleted items reappear in the queue.
+- Test failed deletion (for example a system-restricted asset), empty collections, limited access, VoiceOver selection, large text, and Reduce Motion.

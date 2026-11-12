@@ -64,6 +64,24 @@ private final class PhotoLibrary: ObservableObject {
         save()
     }
 
+    func restore(_ items: [PHAsset]) {
+        for asset in items { decisions.removeValue(forKey: asset.localIdentifier) }
+        save()
+    }
+
+    func deleteRemoved(_ items: [PHAsset]) async throws {
+        // Only explicitly staged items may reach the system deletion request.
+        let candidates = items.filter { decisions[$0.localIdentifier] == LibrarySection.removed.rawValue }
+        guard !candidates.isEmpty else { return }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.deleteAssets(candidates as NSArray)
+        }
+        // Preserve decisions if iOS denies/cancels the request; update only on success.
+        for asset in candidates { decisions.removeValue(forKey: asset.localIdentifier) }
+        save()
+        refresh()
+    }
+
     private func rebuildQueue() {
         pending = assets.filter { decisions[$0.localIdentifier] == nil }
     }
@@ -280,37 +298,10 @@ struct ContentView: View {
     }
 
     private var collection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(section.rawValue).font(.title2.weight(.semibold))
-                if section == .removed {
-                    Text("Only set aside in this app. Originals are still in your iPhone library.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                let items = library.items(in: section)
-                if items.isEmpty {
-                    ContentUnavailableView("Nothing here yet", systemImage: section.symbol)
-                } else {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        ForEach(items, id: \.localIdentifier) { asset in
-                            Button { inspected = MediaSelection(asset: asset) } label: {
-                                AssetThumbnail(asset: asset, target: CGSize(width: 400, height: 480))
-                                    .frame(height: 210).frame(maxWidth: .infinity)
-                                    .background(.white.opacity(0.06))
-                                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                                    .overlay(alignment: .bottomTrailing) {
-                                        if asset.mediaType == .video {
-                                            Image(systemName: "play.circle.fill").font(.title).padding(10)
-                                        }
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(asset.mediaType == .video ? "Video, view item" : "Photo, view item")
-                        }
-                    }
-                }
-            }.padding(.top, 12)
+        CollectionBrowser(library: library, section: section) { asset in
+            inspected = MediaSelection(asset: asset)
         }
+        .id(section)
     }
 
     private var swipeTab: some View {
@@ -335,6 +326,223 @@ struct ContentView: View {
 
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+    }
+}
+
+private struct CollectionFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct DeletionRequest: Identifiable {
+    let id = UUID()
+    let assets: [PHAsset]
+}
+
+private struct CollectionBrowser: View {
+    @ObservedObject var library: PhotoLibrary
+    let section: LibrarySection
+    let inspect: (PHAsset) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isSelecting = false
+    @State private var selected: Set<String> = []
+    @State private var frames: [String: CGRect] = [:]
+    @State private var anchor: Int?
+    @State private var dragBase: Set<String> = []
+    @State private var dragAdds = true
+    @State private var deletion: DeletionRequest?
+    @State private var isDeleting = false
+    @State private var errorMessage: String?
+
+    private var items: [PHAsset] { library.items(in: section) }
+    private var chosen: [PHAsset] { items.filter { selected.contains($0.localIdentifier) } }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            collectionToolbar
+            ScrollView {
+                if items.isEmpty {
+                    ContentUnavailableView("Nothing here yet", systemImage: section.symbol)
+                        .padding(.top, 48)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        ForEach(items, id: \.localIdentifier) { asset in
+                            collectionCell(asset)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+            .coordinateSpace(name: "collectionViewport")
+            .onPreferenceChange(CollectionFrames.self) { frames = $0 }
+            .scrollDisabled(anchor != nil)
+            .simultaneousGesture(selectionDrag)
+        }
+        .disabled(isDeleting)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !selected.isEmpty {
+                selectionTray
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.88), value: selected.isEmpty)
+        .onChange(of: library.assets.map(\.localIdentifier)) { _, _ in reconcileSelection() }
+        .onChange(of: library.decisions) { _, _ in reconcileSelection() }
+        .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
+            get: { deletion != nil },
+            set: { if !$0 { deletion = nil } }
+        ), titleVisibility: .visible, presenting: deletion) { request in
+            Button("Delete \(request.assets.count) item(s)", role: .destructive) {
+                delete(request.assets)
+            }
+            Button("Cancel", role: .cancel) { deletion = nil }
+        } message: { request in
+            Text("These \(request.assets.count) items will be deleted from your iPhone photo library and synced devices. Apple Photos normally keeps them in its Recently Deleted album for 30 days.")
+        }
+        .alert("Couldn’t delete items", isPresented: Binding(
+            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: { Text(errorMessage ?? "Please try again.") }
+        .overlay { if isDeleting { ProgressView("Deleting…").padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20)) } }
+    }
+
+    private var collectionToolbar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(section.rawValue).font(.title2.weight(.semibold))
+                Spacer()
+                if !items.isEmpty {
+                    Button(isSelecting ? "Done" : "Select") {
+                        isSelecting.toggle()
+                        if !isSelecting { selected.removeAll(); anchor = nil }
+                    }
+                    .font(.subheadline.weight(.semibold)).tint(.mint)
+                }
+            }
+            if section == .removed {
+                Text("Staged here until you confirm deletion from Apple Photos.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                if isSelecting {
+                    Button(selected.count == items.count ? "Deselect All" : "Select All") {
+                        selected = selected.count == items.count ? [] : Set(items.map(\.localIdentifier))
+                    }
+                    .font(.caption.weight(.semibold)).disabled(items.isEmpty)
+                }
+                Spacer()
+                if section == .removed && selected.isEmpty && !items.isEmpty {
+                    Button("Delete All", role: .destructive) { deletion = DeletionRequest(assets: items) }
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+            if isSelecting {
+                Text("Tap items, or drag sideways across a row to select. Scroll between gestures.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 12)
+    }
+
+    private func collectionCell(_ asset: PHAsset) -> some View {
+        let checked = selected.contains(asset.localIdentifier)
+        return Button {
+            if isSelecting {
+                if checked { selected.remove(asset.localIdentifier) }
+                else { selected.insert(asset.localIdentifier) }
+            } else { inspect(asset) }
+        } label: {
+            AssetThumbnail(asset: asset, target: CGSize(width: 400, height: 480))
+                .frame(height: 210).frame(maxWidth: .infinity)
+                .background(.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(checked ? Color.mint : .clear, lineWidth: 3) }
+                .overlay(alignment: .bottomTrailing) {
+                    if isSelecting {
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                            .font(.title2).foregroundStyle(checked ? Color.mint : .white)
+                            .background(.black.opacity(0.45), in: Circle()).padding(10)
+                    } else if asset.mediaType == .video {
+                        Image(systemName: "play.circle.fill").font(.title).padding(10)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(asset.mediaType == .video ? "Video" : "Photo")
+        .accessibilityValue(checked ? "Selected" : "Not selected")
+        .background(GeometryReader { proxy in
+            Color.clear.preference(key: CollectionFrames.self, value: [asset.localIdentifier: proxy.frame(in: .named("collectionViewport"))])
+        })
+    }
+
+    private var selectionDrag: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .named("collectionViewport"))
+            .onChanged { value in
+                guard isSelecting, !isDeleting else { return }
+                if anchor == nil {
+                    // Let ordinary vertical drags scroll. A sideways start paints a range.
+                    guard abs(value.translation.width) > abs(value.translation.height),
+                          let start = index(at: value.startLocation) else { return }
+                    anchor = start
+                    dragBase = selected
+                    dragAdds = !selected.contains(items[start].localIdentifier)
+                }
+                guard let start = anchor, let end = index(at: value.location) else { return }
+                let ids = Set(items[min(start, end)...max(start, end)].map(\.localIdentifier))
+                selected = dragAdds ? dragBase.union(ids) : dragBase.subtracting(ids)
+            }
+            .onEnded { _ in anchor = nil; dragBase.removeAll() }
+    }
+
+    private func index(at point: CGPoint) -> Int? {
+        items.firstIndex { asset in frames[asset.localIdentifier]?.contains(point) == true }
+    }
+
+    private var selectionTray: some View {
+        VStack(spacing: 12) {
+            Text("\(selected.count) selected").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Button {
+                library.restore(chosen)
+                selected.removeAll()
+            } label: {
+                Label("Return to Swipe Queue", systemImage: "arrow.uturn.backward")
+                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+            }
+            .buttonStyle(.bordered).tint(.mint)
+            if section == .removed {
+                Button(role: .destructive) { deletion = DeletionRequest(assets: chosen) } label: {
+                    Label("Delete", systemImage: "trash")
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered).tint(.red)
+            }
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .padding(.vertical, 8)
+    }
+
+    private func reconcileSelection() {
+        selected.formIntersection(Set(items.map(\.localIdentifier)))
+        anchor = nil
+    }
+
+    private func delete(_ assets: [PHAsset]) {
+        guard !isDeleting, !assets.isEmpty else { return }
+        isDeleting = true
+        deletion = nil
+        Task { @MainActor in
+            do {
+                try await library.deleteRemoved(assets)
+                selected.subtract(assets.map(\.localIdentifier))
+            } catch {
+                errorMessage = "Nothing was removed by the app. \(error.localizedDescription)"
+            }
+            isDeleting = false
+        }
     }
 }
 

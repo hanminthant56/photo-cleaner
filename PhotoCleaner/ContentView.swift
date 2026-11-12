@@ -82,6 +82,19 @@ private final class PhotoLibrary: ObservableObject {
         refresh()
     }
 
+    func toggleFavorite(_ asset: PHAsset) async throws -> Bool {
+        let current = PHAsset.fetchAssets(withLocalIdentifiers: [asset.localIdentifier], options: nil).firstObject
+        guard let current, current.canPerform(.properties) else {
+            throw NSError(domain: "PhotoCleaner", code: 1, userInfo: [NSLocalizedDescriptionKey: "This item’s favorite status can’t be changed. Check Photos access in Settings."])
+        }
+        let favorite = !current.isFavorite
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest(for: current).isFavorite = favorite
+        }
+        refresh()
+        return favorite
+    }
+
     private func rebuildQueue() {
         pending = assets.filter { decisions[$0.localIdentifier] == nil }
     }
@@ -101,7 +114,9 @@ struct ContentView: View {
     @State private var isDismissing = false
     @State private var playing: MediaSelection?
     @State private var inspected: MediaSelection?
-    @State private var doubleTapped = false
+    @State private var heartFeedback: HeartFeedback?
+    @State private var isUpdatingFavorite = false
+    @State private var favoriteError: String?
 
     private var progress: CGFloat { min(abs(offset.width) / 180, 1) }
     private var removing: Bool { offset.width < 0 }
@@ -130,9 +145,14 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !isDismissing { library.refresh() }
         }
+        .alert("Couldn’t update favorite", isPresented: Binding(
+            get: { favoriteError != nil }, set: { if !$0 { favoriteError = nil } }
+        )) {
+            Button("OK", role: .cancel) { favoriteError = nil }
+        } message: { Text(favoriteError ?? "Please try again.") }
         .sheet(item: $playing) { selection in VideoPlayback(asset: selection.asset) }
         .sheet(item: $inspected) { selection in
-            MediaDetail(asset: selection.asset) {
+            MediaDetail(library: library, asset: selection.asset) {
                 library.restore(selection.asset)
                 inspected = nil
             }
@@ -146,7 +166,7 @@ struct ContentView: View {
             Menu {
                 ForEach(LibrarySection.allCases, id: \.self) { item in
                     Button {
-                        guard !isDismissing else { return }
+                        guard !isDismissing, !isUpdatingFavorite else { return }
                         section = item
                         offset = .zero
                     } label: {
@@ -234,8 +254,12 @@ struct ContentView: View {
                 if front { decisionBadge.opacity(Double(progress)).padding(20) }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 28)
-                    .strokeBorder(doubleTapped && front ? Color.white.opacity(0.7) : .clear, lineWidth: 2)
+                if front, let heartFeedback {
+                    HeartCelebration(favorite: heartFeedback.favorite)
+                        .id(heartFeedback.id)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             .scaleEffect(scale)
             .offset(y: lift)
@@ -245,7 +269,8 @@ struct ContentView: View {
             .allowsHitTesting(front && !isDismissing)
             .accessibilityHidden(!front)
             .gesture(swipeGesture(for: asset, size: size))
-            .simultaneousGesture(TapGesture(count: 2).onEnded { acknowledgeDoubleTap() })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
+            .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
             .accessibilityAction(named: Text("Keep")) { decide(asset, keep: true, size: size) }
             .accessibilityAction(named: Text("Move to Recently Removed")) { decide(asset, keep: false, size: size) }
     }
@@ -262,11 +287,11 @@ struct ContentView: View {
     private func swipeGesture(for asset: PHAsset, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard !isDismissing else { return }
+                guard !isDismissing, !isUpdatingFavorite else { return }
                 offset = value.translation
             }
             .onEnded { value in
-                guard !isDismissing else { return }
+                guard !isDismissing, !isUpdatingFavorite else { return }
                 let actual = value.translation
                 let projected = value.predictedEndTranslation
                 let horizontal = abs(actual.width) > abs(actual.height)
@@ -280,7 +305,7 @@ struct ContentView: View {
     }
 
     private func decide(_ asset: PHAsset, keep: Bool, size: CGSize) {
-        guard !isDismissing else { return }
+        guard !isDismissing, !isUpdatingFavorite else { return }
         isDismissing = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.95), completionCriteria: .removed) {
@@ -292,7 +317,7 @@ struct ContentView: View {
                 library.decide(asset, section: keep ? .kept : .removed)
                 offset = .zero
                 isDismissing = false
-                doubleTapped = false
+                heartFeedback = nil
             }
         }
     }
@@ -315,12 +340,18 @@ struct ContentView: View {
         .accessibilityAddTraits(.isSelected)
     }
 
-    private func acknowledgeDoubleTap() {
-        guard !isDismissing, offset == .zero else { return }
-        doubleTapped = true
+    private func toggleFavorite(_ asset: PHAsset) {
+        guard !isDismissing, !isUpdatingFavorite, offset == .zero else { return }
+        isUpdatingFavorite = true
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(500))
-            doubleTapped = false
+            do {
+                let favorite = try await library.toggleFavorite(asset)
+                heartFeedback = HeartFeedback(favorite: favorite)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                favoriteError = error.localizedDescription
+            }
+            isUpdatingFavorite = false
         }
     }
 
@@ -573,6 +604,17 @@ private struct MediaCard: View {
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(.white.opacity(0.12)))
+        .overlay(alignment: .bottomTrailing) {
+            if asset.isFavorite {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.pink)
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(16)
+                    .accessibilityLabel("Favorite in Apple Photos")
+            }
+        }
         .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
         .accessibilityLabel(asset.mediaType == .video ? "Video" : "Photo")
     }
@@ -646,9 +688,18 @@ private struct VideoPlayback: View {
 }
 
 private struct MediaDetail: View {
+    @ObservedObject var library: PhotoLibrary
     let asset: PHAsset
     let restore: () -> Void
+    @Environment(\.dismiss) private var dismiss
     @State private var playing = false
+    @State private var confirmDelete = false
+    @State private var isDeleting = false
+    @State private var deletionError: String?
+
+    private var canDelete: Bool {
+        library.decisions[asset.localIdentifier] == LibrarySection.removed.rawValue
+    }
 
     var body: some View {
         NavigationStack {
@@ -658,12 +709,91 @@ private struct MediaDetail: View {
                     Button("Play video", systemImage: "play.fill") { playing = true }
                 }
                 Button("Return to Swipe Queue", action: restore).buttonStyle(.bordered)
+                if canDelete {
+                    Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                        .buttonStyle(.bordered).tint(.red)
+                }
             }
+            .disabled(isDeleting)
             .padding()
             .navigationTitle(asset.mediaType == .video ? "Video" : "Photo")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
+            .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
+        .interactiveDismissDisabled(isDeleting)
         .sheet(isPresented: $playing) { VideoPlayback(asset: asset) }
+        .confirmationDialog("Delete from Apple Photos?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { deleteItem() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This item will be deleted from your iPhone library and synced devices. Apple Photos normally keeps it in Recently Deleted for 30 days.")
+        }
+        .alert("Couldn’t delete item", isPresented: Binding(
+            get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { deletionError = nil }
+        } message: { Text(deletionError ?? "Please try again.") }
+    }
+
+    private func deleteItem() {
+        guard !isDeleting, canDelete else { return }
+        isDeleting = true
+        Task { @MainActor in
+            do {
+                try await library.deleteRemoved([asset])
+                dismiss()
+            } catch {
+                deletionError = error.localizedDescription
+            }
+            isDeleting = false
+        }
+    }
+}
+
+private struct HeartFeedback: Identifiable {
+    let id = UUID()
+    let favorite: Bool
+}
+
+private struct HeartCelebration: View {
+    let favorite: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+    @State private var faded = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                if favorite && !reduceMotion {
+                    ForEach(0..<6) { index in
+                        Image(systemName: "sparkle")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.pink.opacity(0.8))
+                            .offset(x: appeared ? cos(Double(index) * .pi / 3) * 75 : 0,
+                                    y: appeared ? sin(Double(index) * .pi / 3) * 75 : 0)
+                    }
+                }
+                Image(systemName: favorite ? "heart.fill" : "heart.slash.fill")
+                    .font(.system(size: 76, weight: .semibold))
+                    .foregroundStyle(favorite ? Color.pink : Color.white)
+                    .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+            }
+            Text(favorite ? "Added to Favorites" : "Removed from Favorites")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .scaleEffect(reduceMotion ? 1 : (appeared ? 1 : 0.35))
+        .offset(y: reduceMotion ? 0 : (faded ? -32 : 0))
+        .opacity(appeared && !faded ? 1 : 0)
+        .task {
+            withAnimation(reduceMotion ? .easeIn(duration: 0.15) : .spring(response: 0.4, dampingFraction: 0.6)) {
+                appeared = true
+            }
+            do { try await Task.sleep(for: .milliseconds(950)) } catch { return }
+            withAnimation(.easeOut(duration: 0.3)) { faded = true }
+        }
     }
 }
 

@@ -856,6 +856,7 @@ private struct AlbumPicker: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var saved = false
+    @State private var savedAlbumTitle = ""
 
     var body: some View {
         NavigationStack {
@@ -892,7 +893,8 @@ private struct AlbumPicker: View {
                     VStack(spacing: 12) {
                         if saved { Image(systemName: "checkmark").font(.title2).foregroundStyle(.mint) }
                         else { ProgressView() }
-                        Text(saved ? "Added to album" : "Saving…").font(.subheadline.weight(.medium))
+                        Text(saved ? "Added to \(savedAlbumTitle) · Kept" : "Saving…")
+                            .font(.subheadline.weight(.medium)).multilineTextAlignment(.center)
                     }.padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
                 }
             }
@@ -917,11 +919,16 @@ private struct AlbumPicker: View {
 
     private func save(to album: PHAssetCollection?) {
         guard !isSaving else { return }
+        let albumName = album?.localizedTitle ?? title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !albumName.isEmpty else { return }
         isSaving = true
         Task { @MainActor in
             do {
                 if let album { try await library.add(asset, to: album) }
-                else { try await library.createAlbum(named: title, adding: asset) }
+                else { try await library.createAlbum(named: albumName, adding: asset) }
+                // Album writes must succeed before changing the review decision.
+                library.decide(asset, section: .kept)
+                savedAlbumTitle = albumName
                 withAnimation(.easeInOut(duration: 0.2)) { saved = true }
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 try? await Task.sleep(for: .milliseconds(650))

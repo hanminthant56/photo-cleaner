@@ -62,11 +62,13 @@ Test a favorite left swipe, single-item deletion of an already-staged favorite, 
 
 Open a Kept or Recently Removed item and swipe horizontally to page through that collection. A position counter tracks the visible item; Return to Swipe Queue and Delete apply to the currently displayed item. Videos retain an explicit play button. Delete confirmation captures that item and favorites remain protected.
 
-Swipe a queue card down to open a minimal Add to Album sheet, or use its VoiceOver Add to album action. Tap an editable album to add the photo/video in Apple Photos. Smart/system/read-only albums are not listed as writable destinations. New Album asks for a nonempty name and creates the album and adds the item in one Photos transaction. A saved checkmark appears only on success. Cancel and errors leave the card in the queue; adding to an album also keeps it in the queue so it can still be kept or removed later.
+Swipe a queue card down to open a minimal Add to Album sheet, or use its VoiceOver Add to album action. Tap an editable album to add the photo/video in Apple Photos. Smart/system/read-only albums are not listed as writable destinations. New Album asks for a nonempty name and creates the album and adds the item in one Photos transaction. A saved checkmark appears only on success. Cancel and errors leave the card in the queue; a successful album save moves the item to Kept and removes it from the queue.
 
 Validate on your Mac/device:
 
 - Open a middle item in each collection; swipe both ways and verify the counter, photos, video play buttons, and current-item restore/delete behavior. Check both ends of the collection.
 - Swipe a photo and video down. Add each to an existing album and verify it in Apple Photos. Repeat adding to the same album; there should be no duplicated asset.
-- Create an album, verify both its name and contents in Apple Photos, and confirm the source card stays in the queue.
+- Create an album, verify both its name and contents in Apple Photos, and confirm the item moves to Kept and disappears from the queue, including after relaunch.
 - Test Cancel, an empty/whitespace name, limited photo access, no writable albums, system write denial, and VoiceOver Add to album.
+
+After an existing-album or new-album save succeeds, the confirmation reads “Added to [album name] · Kept” and the next pending card becomes available. Kept is an app collection; no extra Apple Photos album named Kept is created. Test both album-save paths, cancel/error paths, and persistence after relaunch.

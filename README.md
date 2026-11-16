@@ -132,3 +132,9 @@ Physical-device checks: pinch in/out repeatedly, pan to each edge at several zoo
 Pinch-in/out changes magnification while touching the image. Releasing either card/viewer pinch returns scale and pan to the original 1× position with a gentle spring. Gesture-state cleanup also resets zoom when a pinch is interrupted. Reduce Motion restores without the spring. Zoom is no longer retained after release; double-tap Favorites and swipe actions remain unchanged.
 
 On device, release at several magnifications and interrupt a pinch; check both surfaces settle smoothly, return to the original framing, and do not trigger sorting, paging, album actions, or dismissal during release.
+
+## Pinch focal point and shrinking
+
+Pinching now ranges from 0.5× to 5× while held. Both the main card and the collection viewer use the gesture’s initial pinch midpoint as their focal point, rather than always zooming into the center. Scaling uses fixed image viewports, with a compensating translation that keeps the touched image location stationary. Release still springs scale and position back to the original framing.
+
+Test pinches at each corner, edges, and center; check both shrinking and enlarging, reversing within the same pinch, portrait/landscape photos, and rapid pinch release. Verify the chosen focal point stays under the fingers and release does not trigger a swipe action. Actual iOS gesture testing remains required.

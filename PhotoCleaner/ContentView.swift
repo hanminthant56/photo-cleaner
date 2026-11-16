@@ -427,7 +427,7 @@ struct ContentView: View {
             .accessibilityHidden(!front)
             .contentShape(RoundedRectangle(cornerRadius: 28))
             .highPriorityGesture(swipeGesture(for: asset, size: size))
-            .simultaneousGesture(cardMagnification)
+            .simultaneousGesture(cardMagnification(size: size))
             .accessibilityAction(named: Text("Reset zoom")) { withAnimation { cardZoom = PhotoZoom() } }
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
@@ -479,13 +479,13 @@ struct ContentView: View {
             }
     }
 
-    private var cardMagnification: some Gesture {
+    private func cardMagnification(size: CGSize) -> some Gesture {
         MagnifyGesture()
             .updating($cardPinching) { _, active, _ in active = true }
             .onChanged { value in
                 guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
                 offset = .zero
-                cardZoom.magnify(value.magnification)
+                cardZoom.magnify(value.magnification, anchor: value.startAnchor, in: size)
             }
     }
 
@@ -977,19 +977,18 @@ private struct PhotoZoom {
     var offset: CGSize = .zero
     private var baseOffset: CGSize = .zero
 
-    mutating func magnify(_ magnification: CGFloat) {
-        let oldScale = scale
-        scale = min(5, max(1, magnification))
-        if oldScale > 1.01 {
-            let ratio = (scale - 1) / (oldScale - 1)
-            offset = CGSize(width: offset.width * ratio, height: offset.height * ratio)
-        }
-        if scale <= 1.01 { offset = .zero; baseOffset = .zero }
+    mutating func magnify(_ magnification: CGFloat, anchor: UnitPoint, in size: CGSize) {
+        scale = min(5, max(0.5, magnification))
+        // Scaling about the center plus this translation keeps the point under
+        // the initial pinch midpoint fixed, for both enlarging and shrinking.
+        offset = CGSize(width: (0.5 - anchor.x) * size.width * (scale - 1),
+                        height: (0.5 - anchor.y) * size.height * (scale - 1))
+        baseOffset = offset
     }
 
     mutating func pan(_ translation: CGSize, in size: CGSize) {
-        let xLimit = size.width * (scale - 1) / 2
-        let yLimit = size.height * (scale - 1) / 2
+        let xLimit = max(0, size.width * (scale - 1) / 2)
+        let yLimit = max(0, size.height * (scale - 1) / 2)
         offset = CGSize(width: min(xLimit, max(-xLimit, baseOffset.width + translation.width)),
                         height: min(yLimit, max(-yLimit, baseOffset.height + translation.height)))
     }
@@ -1007,6 +1006,7 @@ private struct MediaCard: View {
         ZStack {
             Color(red: 0.08, green: 0.10, blue: 0.14)
             AssetThumbnail(asset: asset, target: CGSize(width: size.width * 2, height: size.height * 2))
+                .frame(width: size.width, height: size.height)
                 .scaleEffect(zoom.scale)
                 .offset(zoom.offset)
             if asset.mediaType == .video {
@@ -1301,7 +1301,7 @@ private struct CollectionDetail: View {
             let width = geometry.size.width
             ZStack {
                 ForEach(nearbyPages) { entry in
-                    detailPage(entry.asset)
+                    detailPage(entry.asset, size: geometry.size)
                         .frame(width: width, height: geometry.size.height)
                         .offset(x: CGFloat(entry.index - currentIndex) * width + pageDrag)
                         .allowsHitTesting(entry.index == currentIndex && !isPaging)
@@ -1315,7 +1315,7 @@ private struct CollectionDetail: View {
             .contentShape(Rectangle())
             .coordinateSpace(name: "detailViewport")
             .highPriorityGesture(pageGesture(size: geometry.size))
-            .simultaneousGesture(magnification)
+            .simultaneousGesture(magnification(size: geometry.size))
             .accessibilityAction(named: Text("Reset zoom")) { withAnimation { zoom = PhotoZoom() } }
             .accessibilityAction(named: Text("Close photo viewer")) { dismiss() }
             .accessibilityAction(named: Text("Next item")) { pageBy(1) }
@@ -1359,14 +1359,14 @@ private struct CollectionDetail: View {
             }
     }
 
-    private var magnification: some Gesture {
+    private func magnification(size: CGSize) -> some Gesture {
         MagnifyGesture()
             .updating($pinching) { _, active, _ in active = true }
             .onChanged { value in
                 guard !isDeleting, !isPaging, !isClosing, confirmation == nil else { return }
                 pageDrag = 0
                 dismissDrag = 0
-                zoom.magnify(value.magnification)
+                zoom.magnify(value.magnification, anchor: value.startAnchor, in: size)
             }
     }
 
@@ -1411,12 +1411,12 @@ private struct CollectionDetail: View {
         pageDrag = 0
     }
 
-    private func detailPage(_ asset: PHAsset) -> some View {
+    private func detailPage(_ asset: PHAsset, size: CGSize) -> some View {
         ZStack {
             AssetThumbnail(asset: asset, target: CGSize(width: 1200, height: 1600))
+                .frame(width: max(0, size.width - 32), height: size.height)
                 .scaleEffect(asset.localIdentifier == currentID ? zoom.scale : 1)
                 .offset(asset.localIdentifier == currentID ? zoom.offset : .zero)
-                .padding(.horizontal, 16)
             if asset.mediaType == .video {
                 Button { playing = MediaSelection(asset: asset) } label: {
                     Image(systemName: "play.fill").font(.title)

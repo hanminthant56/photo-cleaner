@@ -104,3 +104,9 @@ Verify Return All cancel/confirm, that only Kept decisions reset, persistence af
 Kept and Recently Removed show the most recently reviewed items first, using locally persisted decision timestamps. This includes album saves that move items to Kept. Opening either collection starts with these newest items, and its detail viewer uses the same order. Restoring an item clears its review timestamp; sorting it again assigns a new timestamp. Existing decisions from older versions have no recorded review time, so they retain newest-photo-first ordering below newly reviewed items.
 
 Check with an old photo: keep it and confirm it appears first even above newer photos. Do the same for Recently Removed. Relaunch and verify the order persists; restore and re-review an item, and verify it moves to the front again.
+
+## Drag-selection performance
+
+Collection items and their index lookup are cached until library/review data changes. Hit-testing examines laid-out cells, selection updates only when the endpoint changes, and only the changed range is applied. Entering Select reserves tray space to avoid moving the grid under the finger. Auto-scroll ramps speed using display-frame elapsed time and stops when the gesture ends.
+
+On a physical phone with a large collection, test slow/fast range drags, reversing across the anchor, selecting/deselecting preselected items, and scrolling at both edges. Confirm the first selection does not shift the grid and lifting stops scrolling. Portable range-invariant checks run in the cloud; actual touch smoothness and iOS compilation require Mac/device validation.

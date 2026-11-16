@@ -20,6 +20,7 @@ private enum LibrarySection: String, CaseIterable {
 @MainActor
 private final class PhotoLibrary: ObservableObject {
     @Published var assets: [PHAsset] = []
+    @Published private(set) var reviewRevision = 0
     @Published var decisions: [String: String]
     @Published private(set) var decisionDates: [String: Double]
     @Published var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -59,7 +60,7 @@ private final class PhotoLibrary: ObservableObject {
 
     func refresh() {
         authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard hasAccess else { assets = []; pending = []; return }
+        guard hasAccess else { assets = []; pending = []; reviewRevision += 1; return }
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d", PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -67,6 +68,7 @@ private final class PhotoLibrary: ObservableObject {
         var loaded: [PHAsset] = []
         result.enumerateObjects { asset, _, _ in loaded.append(asset) }
         assets = loaded
+        reviewRevision += 1
         rebuildQueue()
         refreshRecentAlbum()
     }
@@ -182,6 +184,7 @@ private final class PhotoLibrary: ObservableObject {
         rebuildQueue()
         UserDefaults.standard.set(decisions, forKey: storageKey)
         UserDefaults.standard.set(decisionDates, forKey: datesKey)
+        reviewRevision += 1
     }
 }
 
@@ -578,6 +581,9 @@ private struct CollectionBrowser: View {
     @State private var selected: Set<String> = []
     @State private var frames: [String: CGRect] = [:]
     @State private var anchor: Int?
+    @State private var lastEndpoint: Int?
+    @State private var items: [PHAsset] = []
+    @State private var indicesByID: [String: Int] = [:]
     @State private var dragBase: Set<String> = []
     @State private var dragAdds = true
     @State private var dragLocation: CGPoint?
@@ -587,7 +593,6 @@ private struct CollectionBrowser: View {
     @State private var isDeleting = false
     @State private var errorMessage: String?
 
-    private var items: [PHAsset] { library.items(in: section) }
     private var chosen: [PHAsset] { items.filter { selected.contains($0.localIdentifier) } }
 
     var body: some View {
@@ -618,16 +623,23 @@ private struct CollectionBrowser: View {
             .simultaneousGesture(selectionDrag)
         }
         .disabled(isDeleting)
+        // Reserve the action area before dragging starts so the grid does not jump
+        // when the first item is selected or the last item is deselected.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !selected.isEmpty {
-                selectionTray
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            if isSelecting { Color.clear.frame(height: 184) }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.88), value: selected.isEmpty)
+        .overlay(alignment: .bottom) {
+            Group {
+                if !selected.isEmpty {
+                    selectionTray
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: selected.isEmpty)
+        }
+        .onAppear { reloadItems() }
         .onDisappear { endSelectionDrag() }
-        .onChange(of: library.assets.map(\.localIdentifier)) { _, _ in reconcileSelection() }
-        .onChange(of: library.decisions) { _, _ in reconcileSelection() }
+        .onChange(of: library.reviewRevision) { _, _ in reloadItems() }
         .confirmationDialog("Return all kept items?", isPresented: Binding(
             get: { returnAll != nil }, set: { if !$0 { returnAll = nil } }
         ), titleVisibility: .visible, presenting: returnAll) { assets in
@@ -696,6 +708,7 @@ private struct CollectionBrowser: View {
                         .font(.subheadline.weight(.semibold))
                 }
             }
+            .frame(minHeight: 28)
             if isSelecting {
                 Text("Drag across items to select. Hold near the top or bottom to keep scrolling.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -756,13 +769,28 @@ private struct CollectionBrowser: View {
 
     private func updateSelection(at point: CGPoint) {
         guard let start = anchor, items.indices.contains(start) else { return }
-        // Nearest-cell fallback keeps selecting through grid gutters and at viewport edges.
-        let end = index(at: point) ?? items.indices.filter { frames[items[$0].localIdentifier] != nil }.min { lhs, rhs in
-            distance(to: frames[items[lhs].localIdentifier]!, from: point) < distance(to: frames[items[rhs].localIdentifier]!, from: point)
+        // Hit-test only laid-out cells, rather than scanning the entire library.
+        let id = frames.first(where: { $0.value.contains(point) })?.key
+            ?? frames.min(by: { distance(to: $0.value, from: point) < distance(to: $1.value, from: point) })?.key
+        guard let id, let end = indicesByID[id], end != lastEndpoint else { return }
+        let nextRange = min(start, end)...max(start, end)
+        let previousRange = lastEndpoint.map { min(start, $0)...max(start, $0) }
+        let lower = min(lastEndpoint ?? start, end)
+        let upper = max(lastEndpoint ?? start, end)
+        var updated = selected
+        // Only touch cells entering/leaving the range. Preserve the pre-drag state
+        // when the finger reverses, including range deselection.
+        for index in lower...upper {
+            let wasInRange = previousRange?.contains(index) ?? false
+            let isInRange = nextRange.contains(index)
+            guard wasInRange != isInRange else { continue }
+            let identifier = items[index].localIdentifier
+            let shouldSelect = isInRange ? dragAdds : dragBase.contains(identifier)
+            if shouldSelect { updated.insert(identifier) }
+            else { updated.remove(identifier) }
         }
-        guard let end else { return }
-        let ids = Set(items[min(start, end)...max(start, end)].map(\.localIdentifier))
-        selected = dragAdds ? dragBase.union(ids) : dragBase.subtracting(ids)
+        lastEndpoint = end
+        if updated != selected { selected = updated }
     }
 
     private func distance(to rect: CGRect, from point: CGPoint) -> CGFloat {
@@ -773,12 +801,14 @@ private struct CollectionBrowser: View {
 
     private func endSelectionDrag() {
         anchor = nil
+        lastEndpoint = nil
         dragLocation = nil
         dragBase.removeAll()
     }
 
     private func index(at point: CGPoint) -> Int? {
-        items.firstIndex { asset in frames[asset.localIdentifier]?.contains(point) == true }
+        guard let id = frames.first(where: { $0.value.contains(point) })?.key else { return nil }
+        return indicesByID[id]
     }
 
     private var selectionTray: some View {
@@ -805,9 +835,11 @@ private struct CollectionBrowser: View {
         .padding(.vertical, 8)
     }
 
-    private func reconcileSelection() {
-        selected.formIntersection(Set(items.map(\.localIdentifier)))
+    private func reloadItems() {
         endSelectionDrag()
+        items = library.items(in: section)
+        indicesByID = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.localIdentifier, $0.offset) })
+        selected.formIntersection(Set(indicesByID.keys))
     }
 
     private func delete(_ assets: [PHAsset]) {
@@ -854,6 +886,8 @@ private struct SelectionAutoScroller: UIViewRepresentable {
         weak var marker: UIView?
         var location: CGPoint?
         private var link: CADisplayLink?
+        private var velocity: CGFloat = 0
+        private var lastTimestamp: CFTimeInterval?
 
         func setActive(_ active: Bool) {
             if active && link == nil {
@@ -863,6 +897,8 @@ private struct SelectionAutoScroller: UIViewRepresentable {
             } else if !active {
                 link?.invalidate()
                 link = nil
+                velocity = 0
+                lastTimestamp = nil
             }
         }
 
@@ -880,11 +916,13 @@ private struct SelectionAutoScroller: UIViewRepresentable {
             let speed: CGFloat
             if y < top + zone { speed = -min(1, max(0, (top + zone - y) / zone)) * 480 }
             else if y > bottom - zone { speed = min(1, max(0, (y - bottom + zone) / zone)) * 480 }
-            else { return }
+            else { velocity = 0; lastTimestamp = displayLink.timestamp; return }
             let minimum = -scroll.adjustedContentInset.top
             let maximum = max(minimum, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
-            let dt = min(displayLink.targetTimestamp - displayLink.timestamp, 1.0 / 30.0)
-            let next = min(maximum, max(minimum, scroll.contentOffset.y + speed * CGFloat(dt)))
+            let dt = min(max(displayLink.timestamp - (lastTimestamp ?? displayLink.timestamp - displayLink.duration), 0), 1.0 / 30.0)
+            lastTimestamp = displayLink.timestamp
+            velocity += (speed - velocity) * min(1, CGFloat(dt) * 12)
+            let next = min(maximum, max(minimum, scroll.contentOffset.y + velocity * CGFloat(dt)))
             if abs(next - scroll.contentOffset.y) > 0.01 {
                 scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: next), animated: false)
             }

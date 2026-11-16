@@ -21,14 +21,17 @@ private enum LibrarySection: String, CaseIterable {
 private final class PhotoLibrary: ObservableObject {
     @Published var assets: [PHAsset] = []
     @Published var decisions: [String: String]
+    @Published private(set) var decisionDates: [String: Double]
     @Published var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var pending: [PHAsset] = []
     @Published private(set) var recentAlbum: PHAssetCollection?
     private let recentAlbumKey = "PhotoCleaner.recentAlbum.v1"
     private let storageKey = "PhotoCleaner.decisions.v1"
+    private let datesKey = "PhotoCleaner.decisionDates.v1"
 
     init() {
         decisions = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        decisionDates = UserDefaults.standard.dictionary(forKey: datesKey) as? [String: Double] ?? [:]
         refreshRecentAlbum()
     }
 
@@ -36,7 +39,17 @@ private final class PhotoLibrary: ObservableObject {
 
     func items(in section: LibrarySection) -> [PHAsset] {
         if section == .all { return pending }
-        return assets.filter { decisions[$0.localIdentifier] == section.rawValue }
+        return assets.filter { decisions[$0.localIdentifier] == section.rawValue }.sorted { lhs, rhs in
+            let left = decisionDates[lhs.localIdentifier] ?? 0
+            let right = decisionDates[rhs.localIdentifier] ?? 0
+            if left != right { return left > right }
+            // Older installations did not record review times. Keep their
+            // existing newest-photo-first order, with a stable tie-breaker.
+            let leftCreated = lhs.creationDate ?? .distantPast
+            let rightCreated = rhs.creationDate ?? .distantPast
+            if leftCreated != rightCreated { return leftCreated > rightCreated }
+            return lhs.localIdentifier < rhs.localIdentifier
+        }
     }
 
     func requestAccess() async {
@@ -60,16 +73,21 @@ private final class PhotoLibrary: ObservableObject {
 
     func decide(_ asset: PHAsset, section: LibrarySection) {
         decisions[asset.localIdentifier] = section.rawValue
+        decisionDates[asset.localIdentifier] = Date().timeIntervalSince1970
         save()
     }
 
     func restore(_ asset: PHAsset) {
         decisions.removeValue(forKey: asset.localIdentifier)
+        decisionDates.removeValue(forKey: asset.localIdentifier)
         save()
     }
 
     func restore(_ items: [PHAsset]) {
-        for asset in items { decisions.removeValue(forKey: asset.localIdentifier) }
+        for asset in items {
+            decisions.removeValue(forKey: asset.localIdentifier)
+            decisionDates.removeValue(forKey: asset.localIdentifier)
+        }
         save()
     }
 
@@ -90,7 +108,10 @@ private final class PhotoLibrary: ObservableObject {
             PHAssetChangeRequest.deleteAssets(candidates as NSArray)
         }
         // Preserve decisions if iOS denies/cancels the request; update only on success.
-        for asset in candidates { decisions.removeValue(forKey: asset.localIdentifier) }
+        for asset in candidates {
+            decisions.removeValue(forKey: asset.localIdentifier)
+            decisionDates.removeValue(forKey: asset.localIdentifier)
+        }
         save()
         refresh()
     }
@@ -160,6 +181,7 @@ private final class PhotoLibrary: ObservableObject {
     private func save() {
         rebuildQueue()
         UserDefaults.standard.set(decisions, forKey: storageKey)
+        UserDefaults.standard.set(decisionDates, forKey: datesKey)
     }
 }
 

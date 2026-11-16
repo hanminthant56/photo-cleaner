@@ -98,3 +98,9 @@ Kept now offers **Return All to Swipe Queue** when no items are selected, with a
 Selected items in Kept offer both **Return to Swipe Queue** and **Delete**. Opening an individual Kept item also offers Delete. Both use the same Apple Photos confirmation, fresh favorite check, and success-only cleanup as Recently Removed. Delete All remains exclusive to Recently Removed. Favorite-containing deletion requests are blocked in full.
 
 Verify Return All cancel/confirm, that only Kept decisions reset, persistence after relaunch, selected and single-item Kept deletion cancel/success, and favorite protection for both. On single-item deletion, verify the visible item is the one targeted after paging. iOS compilation and Photos behavior still require Xcode/device testing.
+
+## Collection order
+
+Kept and Recently Removed show the most recently reviewed items first, using locally persisted decision timestamps. This includes album saves that move items to Kept. Opening either collection starts with these newest items, and its detail viewer uses the same order. Restoring an item clears its review timestamp; sorting it again assigns a new timestamp. Existing decisions from older versions have no recorded review time, so they retain newest-photo-first ordering below newly reviewed items.
+
+Check with an old photo: keep it and confirm it appears first even above newer photos. Do the same for Recently Removed. Relaunch and verify the order persists; restore and re-review an item, and verify it moves to the front again.

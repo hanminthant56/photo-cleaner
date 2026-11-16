@@ -194,3 +194,11 @@ Check the very bottom edge on a physical iPhone while viewing any item, and veri
 The viewer now receives explicit window dimensions including all safe-area insets, and is offset to the actual top-left window edge. Its black backdrop and photo-return layer therefore cover the bottom/home-indicator region as well as the content area. Viewer controls are padded back inside those insets. The underlying grid and floating-tab layout remain unchanged, preserving return-slot geometry.
 
 Verify on a physical iPhone in portrait and landscape: at rest the viewer should cover the full window with no source thumbnails or tab visible below its actions. Downward dragging intentionally reveals the grid; returning completes at the measured thumbnail slot. Compilation and visual coverage still need Xcode/device validation.
+
+## Sharp collection thumbnails
+
+Kept/Recently Removed grid requests use each cell’s measured size multiplied by SwiftUI displayScale, so a 3× iPhone receives enough pixels. Visible requests use exact resizing and opportunistic delivery: quick previews may appear immediately, but the completed sharp result replaces them. Size changes trigger a new request.
+
+Local fastFormat warmup is always preview-only, even if PhotoKit does not flag its image as degraded; it cannot fill the completed-render cache or skip a visible quality upgrade. Preview cache entries track whether they came from a completed quality request, so a large blurry preview cannot outrank a smaller sharp image. The final callback is displayed directly.
+
+On phone, reopen both collections after updating/relaunching and inspect fine text and details. Test first-row warmup, scrolling into uncached rows, rotation, open/close detail, and iCloud media. A temporarily soft iCloud preview may remain while the original downloads; original low-resolution media cannot gain missing detail. Physical sharpness and iOS compilation require device/Xcode validation.

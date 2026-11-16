@@ -657,6 +657,7 @@ private struct CollectionBrowser: View {
     let slots: PhotoSlotFrames
     let viewedID: String?
     let inspect: (PHAsset) -> Void
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isSelecting = false
     @State private var selected: Set<String> = []
@@ -834,7 +835,10 @@ private struct CollectionBrowser: View {
                 else { selected.insert(asset.localIdentifier) }
             } else { inspect(asset) }
         } label: {
-            AssetThumbnail(asset: asset, target: CGSize(width: 400, height: 480))
+            GeometryReader { geometry in
+                AssetThumbnail(asset: asset, target: CGSize(width: ceil(geometry.size.width * displayScale), height: ceil(210 * displayScale)))
+                    .frame(width: geometry.size.width, height: 210)
+            }
                 .frame(height: 210).frame(maxWidth: .infinity)
                 .background(.white.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -1232,13 +1236,21 @@ private struct MediaCard: View {
 private final class PhotoPreviewCache {
     static let shared = PhotoPreviewCache()
     let manager = PHCachingImageManager()
+    private final class Preview {
+        let image: UIImage
+        let complete: Bool
+        init(image: UIImage, complete: Bool) { self.image = image; self.complete = complete }
+    }
+    private let previews = NSCache<NSString, Preview>()
     private let images = NSCache<NSString, UIImage>()
     private var warmRequests: [String: PHImageRequestID] = [:]
     private var warmKeys: Set<String> = []
 
     private init() {
-        images.totalCostLimit = 96 * 1024 * 1024
-        images.countLimit = 160
+        images.totalCostLimit = 48 * 1024 * 1024
+        images.countLimit = 80
+        previews.totalCostLimit = 48 * 1024 * 1024
+        previews.countLimit = 80
     }
 
     func key(_ asset: PHAsset) -> String {
@@ -1246,7 +1258,7 @@ private final class PhotoPreviewCache {
     }
 
     func preview(_ asset: PHAsset) -> UIImage? {
-        images.object(forKey: ("preview/" + key(asset)) as NSString)
+        previews.object(forKey: key(asset) as NSString)?.image
     }
 
     func rendered(_ asset: PHAsset, target: CGSize) -> UIImage? {
@@ -1255,10 +1267,13 @@ private final class PhotoPreviewCache {
 
     func store(_ image: UIImage, asset: PHAsset, target: CGSize, final: Bool) {
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
-        let old = preview(asset)
+        let old = previews.object(forKey: key(asset) as NSString)
         let pixels = image.size.width * image.size.height * image.scale * image.scale
-        let oldPixels = old.map { $0.size.width * $0.size.height * $0.scale * $0.scale } ?? 0
-        if pixels >= oldPixels { images.setObject(image, forKey: ("preview/" + key(asset)) as NSString, cost: cost) }
+        let oldPixels = old.map { $0.image.size.width * $0.image.size.height * $0.image.scale * $0.image.scale } ?? 0
+        // Quality outranks size: a large fast preview must not block a sharp result.
+        if old == nil || (final && old?.complete == false) || (final == old?.complete && pixels >= oldPixels) {
+            previews.setObject(Preview(image: image, complete: final), forKey: key(asset) as NSString, cost: cost)
+        }
         if final { images.setObject(image, forKey: renderKey(asset, target: target) as NSString, cost: cost) }
     }
 
@@ -1277,12 +1292,13 @@ private final class PhotoPreviewCache {
             options.deliveryMode = .fastFormat
             options.resizeMode = .fast
             options.isNetworkAccessAllowed = false
-            warmRequests[id] = manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { [weak self] image, info in
-                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
+            warmRequests[id] = manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { [weak self] image, _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.warmKeys.contains(id) else { return }
-                    if let image { self.store(image, asset: asset, target: target, final: !degraded) }
-                    if !degraded { self.warmRequests.removeValue(forKey: id) }
+                    // fastFormat is only a placeholder, even when PhotoKit does
+                    // not label its result degraded. Never fill the final cache.
+                    if let image { self.store(image, asset: asset, target: target, final: false) }
+                    self.warmRequests.removeValue(forKey: id)
                 }
             }
         }
@@ -1303,6 +1319,7 @@ private final class ThumbnailLoader: ObservableObject {
 
     func load(asset: PHAsset, target: CGSize) {
         cancel()
+        guard target.width > 0, target.height > 0 else { return }
         let cache = PhotoPreviewCache.shared
         if let rendered = cache.rendered(asset, target: target) {
             image = rendered
@@ -1315,7 +1332,7 @@ private final class ThumbnailLoader: ObservableObject {
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .opportunistic
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         request = cache.manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { image, info in
             let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
             let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
@@ -1324,7 +1341,7 @@ private final class ThumbnailLoader: ObservableObject {
                 if let image {
                     cache.store(image, asset: asset, target: target, final: !degraded)
                     // Do not replace the cached preview with a smaller interim image.
-                    self.image = cache.preview(asset) ?? image
+                    self.image = degraded ? (cache.preview(asset) ?? image) : image
                     self.failed = false
                 } else if !degraded { self.failed = self.image == nil }
                 if !degraded { self.request = nil }
@@ -1361,6 +1378,7 @@ private struct AssetThumbnail: View {
         }
         .onAppear { loader.load(asset: asset, target: target) }
         .onChange(of: PhotoPreviewCache.shared.key(asset)) { _, _ in loader.load(asset: asset, target: target) }
+        .onChange(of: target) { _, size in loader.load(asset: asset, target: size) }
         .onDisappear { loader.cancel() }
     }
 }

@@ -25,6 +25,8 @@ private final class PhotoLibrary: ObservableObject {
     @Published private(set) var decisionDates: [String: Double]
     @Published var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var pending: [PHAsset] = []
+    @Published private(set) var kept: [PHAsset] = []
+    @Published private(set) var removed: [PHAsset] = []
     @Published private(set) var recentAlbum: PHAssetCollection?
     private let recentAlbumKey = "PhotoCleaner.recentAlbum.v1"
     private let storageKey = "PhotoCleaner.decisions.v1"
@@ -39,7 +41,14 @@ private final class PhotoLibrary: ObservableObject {
     var hasAccess: Bool { authorization == .authorized || authorization == .limited }
 
     func items(in section: LibrarySection) -> [PHAsset] {
-        if section == .all { return pending }
+        switch section {
+        case .all: return pending
+        case .kept: return kept
+        case .removed: return removed
+        }
+    }
+
+    private func orderedItems(in section: LibrarySection) -> [PHAsset] {
         return assets.filter { decisions[$0.localIdentifier] == section.rawValue }.sorted { lhs, rhs in
             let left = decisionDates[lhs.localIdentifier] ?? 0
             let right = decisionDates[rhs.localIdentifier] ?? 0
@@ -60,7 +69,7 @@ private final class PhotoLibrary: ObservableObject {
 
     func refresh() {
         authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard hasAccess else { assets = []; pending = []; reviewRevision += 1; return }
+        guard hasAccess else { assets = []; pending = []; kept = []; removed = []; reviewRevision += 1; return }
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d", PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -178,6 +187,9 @@ private final class PhotoLibrary: ObservableObject {
 
     private func rebuildQueue() {
         pending = assets.filter { decisions[$0.localIdentifier] == nil }
+        kept = orderedItems(in: .kept)
+        removed = orderedItems(in: .removed)
+        PhotoPreviewCache.shared.prewarm(Array(kept.prefix(8)) + Array(removed.prefix(8)))
     }
 
     private func save() {
@@ -213,6 +225,29 @@ struct ContentView: View {
     private var removing: Bool { offset.width < 0 }
 
     var body: some View {
+        ZStack {
+            mainContent
+                .accessibilityHidden(inspected != nil)
+            if let selection = inspected {
+                CollectionDetail(library: library, section: section, initialID: selection.id,
+                    slots: photoSlots, onPage: { viewedID = $0 }, onClose: {
+                        // Hand the image back without a second fade/layout animation.
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            inspected = nil
+                            viewedID = nil
+                        }
+                    })
+                    .transition(.identity)
+                    .zIndex(10)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(.dark)
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 12) {
             header
             if library.hasAccess {
@@ -264,22 +299,6 @@ struct ContentView: View {
             Button("OK", role: .cancel) { photoActionError = nil }
         } message: { Text(photoActionError ?? "Please try again.") }
         .sheet(item: $playing) { selection in VideoPlayback(asset: selection.asset) }
-        .overlay {
-            if let selection = inspected {
-                CollectionDetail(library: library, section: section, initialID: selection.id,
-                    slots: photoSlots, onPage: { viewedID = $0 }, onClose: {
-                        // Hand the image back without a second fade/layout animation.
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            inspected = nil
-                            viewedID = nil
-                        }
-                    })
-                    .transition(.identity)
-                    .zIndex(10)
-            }
-        }
         .sheet(item: $albumTarget) { selection in
             AlbumPicker(library: library, asset: selection.asset)
         }
@@ -648,6 +667,18 @@ private struct CollectionBrowser: View {
     @State private var isDeleting = false
     @State private var errorMessage: String?
 
+    init(library: PhotoLibrary, section: LibrarySection, slots: PhotoSlotFrames,
+         viewedID: String?, inspect: @escaping (PHAsset) -> Void) {
+        _library = ObservedObject(wrappedValue: library)
+        self.section = section
+        self.slots = slots
+        self.viewedID = viewedID
+        self.inspect = inspect
+        let initialItems = library.items(in: section)
+        _items = State(initialValue: initialItems)
+        _indicesByID = State(initialValue: Dictionary(uniqueKeysWithValues: initialItems.enumerated().map { ($0.element.localIdentifier, $0.offset) }))
+    }
+
     private var chosen: [PHAsset] { items.filter { selected.contains($0.localIdentifier) } }
 
     var body: some View {
@@ -709,7 +740,6 @@ private struct CollectionBrowser: View {
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: selected.isEmpty)
         }
-        .onAppear { reloadItems() }
         .onDisappear { endSelectionDrag() }
         .onChange(of: library.reviewRevision) { _, _ in reloadItems() }
         .confirmationDialog("Return all kept items?", isPresented: Binding(
@@ -1196,6 +1226,8 @@ private final class PhotoPreviewCache {
     static let shared = PhotoPreviewCache()
     let manager = PHCachingImageManager()
     private let images = NSCache<NSString, UIImage>()
+    private var warmRequests: [String: PHImageRequestID] = [:]
+    private var warmKeys: Set<String> = []
 
     private init() {
         images.totalCostLimit = 96 * 1024 * 1024
@@ -1221,6 +1253,32 @@ private final class PhotoPreviewCache {
         let oldPixels = old.map { $0.size.width * $0.size.height * $0.scale * $0.scale } ?? 0
         if pixels >= oldPixels { images.setObject(image, forKey: ("preview/" + key(asset)) as NSString, cost: cost) }
         if final { images.setObject(image, forKey: renderKey(asset, target: target) as NSString, cost: cost) }
+    }
+
+    /// Prepare just the first visible rows, without starting iCloud downloads.
+    func prewarm(_ assets: [PHAsset]) {
+        warmKeys = Set(assets.map { key($0) })
+        let obsolete = warmRequests.keys.filter { !warmKeys.contains($0) }
+        for id in obsolete {
+            if let request = warmRequests.removeValue(forKey: id) { manager.cancelImageRequest(request) }
+        }
+        let target = CGSize(width: 400, height: 480)
+        for asset in assets {
+            let id = key(asset)
+            guard preview(asset) == nil, warmRequests[id] == nil else { continue }
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .fastFormat
+            options.resizeMode = .fast
+            options.isNetworkAccessAllowed = false
+            warmRequests[id] = manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { [weak self] image, info in
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
+                Task { @MainActor [weak self] in
+                    guard let self, self.warmKeys.contains(id) else { return }
+                    if let image { self.store(image, asset: asset, target: target, final: !degraded) }
+                    if !degraded { self.warmRequests.removeValue(forKey: id) }
+                }
+            }
+        }
     }
 
     private func renderKey(_ asset: PHAsset, target: CGSize) -> String {

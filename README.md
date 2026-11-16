@@ -180,3 +180,11 @@ On phone, close items in the first/last visible row, after paging beyond the ori
 The pager now clips its rendered neighbors to the photo viewport so preloaded photo/video previews cannot appear underneath Return to Swipe Queue or Delete. Its lower clipping edge extends only during an active downward return drag, when viewer controls are hidden; the separate thumbnail-return layer is unchanged.
 
 On device, open portrait/landscape photos and video posters, page both directions, pinch, and check beneath the action buttons for leakage. Confirm short downward drags and completed returns still follow the finger without clipping the return animation.
+
+## Full-window viewer and immediate collection data
+
+The viewer is now a top-level sibling above the complete app layout, including its bottom safe-area/tab inset. It no longer inherits the collection’s reduced content area, which previously exposed real grid thumbnails under the viewer action buttons. The grid stays underneath for downward interactive return, without resizing or removing its tab inset.
+
+Kept/Recently Removed order is precomputed when library/review data changes, and collection State starts with that snapshot in init rather than an empty array followed by onAppear reload. The first eight items of each collection get bounded local-only preview warmup; obsolete warmup requests are cancelled, and normal iCloud loading remains on demand.
+
+Check the very bottom edge on a physical iPhone while viewing any item, and verify no grid or tab leaks through at rest. Drag down to reveal the grid intentionally, then complete/cancel. Open each collection repeatedly with large libraries and verify there is no initial empty-grid frame. Uncached/iCloud-only media can still take time to load; actual first-paint timing requires device validation.

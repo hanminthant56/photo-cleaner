@@ -197,6 +197,8 @@ struct ContentView: View {
     @State private var isDismissing = false
     @State private var playing: MediaSelection?
     @State private var inspected: MediaSelection?
+    @State private var viewedID: String?
+    @Namespace private var photoSlots
     @State private var albumTarget: MediaSelection?
     @State private var heartFeedback: HeartFeedback?
     @State private var isUpdatingFavorite = false
@@ -262,8 +264,18 @@ struct ContentView: View {
             Button("OK", role: .cancel) { photoActionError = nil }
         } message: { Text(photoActionError ?? "Please try again.") }
         .sheet(item: $playing) { selection in VideoPlayback(asset: selection.asset) }
-        .sheet(item: $inspected) { selection in
-            CollectionDetail(library: library, section: section, initialID: selection.id)
+        .overlay {
+            if let selection = inspected {
+                CollectionDetail(library: library, section: section, initialID: selection.id,
+                    slots: photoSlots, onPage: { viewedID = $0 }, onClose: {
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.9)) {
+                            inspected = nil
+                            viewedID = nil
+                        }
+                    })
+                    .transition(.identity)
+                    .zIndex(10)
+            }
         }
         .sheet(item: $albumTarget) { selection in
             AlbumPicker(library: library, asset: selection.asset)
@@ -558,8 +570,11 @@ struct ContentView: View {
     }
 
     private var collection: some View {
-        CollectionBrowser(library: library, section: section) { asset in
-            inspected = MediaSelection(asset: asset)
+        CollectionBrowser(library: library, section: section, slots: photoSlots, viewedID: viewedID) { asset in
+            withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.9)) {
+                viewedID = asset.localIdentifier
+                inspected = MediaSelection(asset: asset)
+            }
         }
         .id(section)
     }
@@ -610,6 +625,8 @@ private struct DeletionRequest: Identifiable {
 private struct CollectionBrowser: View {
     @ObservedObject var library: PhotoLibrary
     let section: LibrarySection
+    let slots: Namespace.ID
+    let viewedID: String?
     let inspect: (PHAsset) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isSelecting = false
@@ -633,6 +650,7 @@ private struct CollectionBrowser: View {
     var body: some View {
         VStack(spacing: 12) {
             collectionToolbar
+            ScrollViewReader { scrollProxy in
             ScrollView {
                 if items.isEmpty {
                     ContentUnavailableView("Nothing here yet", systemImage: section.symbol)
@@ -640,7 +658,7 @@ private struct CollectionBrowser: View {
                 } else {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                         ForEach(items, id: \.localIdentifier) { asset in
-                            collectionCell(asset)
+                            collectionCell(asset).id(asset.localIdentifier)
                         }
                     }
                     .padding(.vertical, 8)
@@ -656,6 +674,16 @@ private struct CollectionBrowser: View {
             }
             .scrollDisabled(anchor != nil)
             .simultaneousGesture(selectionDrag)
+            .onChange(of: viewedID) { _, id in
+                guard let id else { return }
+                // Keep the current photo's real slot laid out beneath the viewer.
+                if frames[id].map({ $0.intersects(UIScreen.main.bounds) }) != true {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { scrollProxy.scrollTo(id, anchor: .center) }
+                }
+            }
+            }
         }
         .disabled(isDeleting)
         // Reserve the action area before dragging starts so the grid does not jump
@@ -764,6 +792,8 @@ private struct CollectionBrowser: View {
                 .frame(height: 210).frame(maxWidth: .infinity)
                 .background(.white.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                .matchedGeometryEffect(id: asset.localIdentifier, in: slots, isSource: true)
+                .opacity(viewedID == asset.localIdentifier ? 0 : 1)
                 .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(checked ? Color.mint : .clear, lineWidth: 3) }
                 .overlay(alignment: .bottomTrailing) {
                     if isSelecting {
@@ -1294,16 +1324,31 @@ private struct VideoPlayback: View {
     }
 }
 
+private struct PhotoSlotDestination: ViewModifier {
+    let id: String
+    let slots: Namespace.ID
+    let active: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if active { content.matchedGeometryEffect(id: id, in: slots, isSource: false) }
+        else { content }
+    }
+}
+
 private struct CollectionDetail: View {
     @ObservedObject var library: PhotoLibrary
     let section: LibrarySection
-    @Environment(\.dismiss) private var dismiss
+    let slots: Namespace.ID
+    let onPage: (String) -> Void
+    let onClose: () -> Void
     @State private var currentID: String
     @State private var playing: MediaSelection?
     @State private var confirmation: MediaSelection?
     @State private var isDeleting = false
     @State private var deletionError: String?
     @State private var pageDrag: CGFloat = 0
+    @State private var returnDrag: CGSize = .zero
     @State private var zoom = PhotoZoom()
     @State private var pinching = false
     @State private var pinchEnded = Date.distantPast
@@ -1311,9 +1356,12 @@ private struct CollectionDetail: View {
     @State private var isPaging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(library: PhotoLibrary, section: LibrarySection, initialID: String) {
+    init(library: PhotoLibrary, section: LibrarySection, initialID: String, slots: Namespace.ID, onPage: @escaping (String) -> Void, onClose: @escaping () -> Void) {
         self.library = library
         self.section = section
+        self.slots = slots
+        self.onPage = onPage
+        self.onClose = onClose
         _currentID = State(initialValue: initialID)
         _items = State(initialValue: library.items(in: section))
     }
@@ -1325,8 +1373,14 @@ private struct CollectionDetail: View {
     }
 
     var body: some View {
-        NavigationStack {
+        ZStack {
+            Color.black.opacity(max(0, 1 - Double(returnDrag.height / 400))).ignoresSafeArea()
             VStack(spacing: 16) {
+                HStack {
+                    Text(section.rawValue).font(.headline)
+                    Spacer()
+                    Button("Done") { onClose() }.disabled(isDeleting || isPaging)
+                }.padding(.horizontal, 20)
                 pager
                 HStack(spacing: 24) {
                     Button { pageBy(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
@@ -1338,7 +1392,7 @@ private struct CollectionDetail: View {
                 if let current {
                     Button("Return to Swipe Queue", systemImage: "arrow.uturn.backward") {
                         library.restore(current)
-                        dismiss()
+                        onClose()
                     }
                     .buttonStyle(.bordered)
                     if section == .kept || section == .removed {
@@ -1351,15 +1405,10 @@ private struct CollectionDetail: View {
             }
             .padding(.vertical, 16)
             .disabled(isDeleting || isPaging)
-            .navigationTitle(section.rawValue)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
-        .presentationBackground(.black)
-        .presentationContentInteraction(.resizes)
-        .interactiveDismissDisabled(isDeleting || isPaging || confirmation != nil || pinching || abs(pageDrag) > 1)
-        .onChange(of: currentID) { _, _ in zoom = PhotoZoom() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: currentID) { _, id in zoom = PhotoZoom(); returnDrag = .zero; onPage(id) }
         .onChange(of: pinching) { _, active in
             guard !active else { return }
             pinchEnded = Date()
@@ -1431,12 +1480,13 @@ private struct CollectionDetail: View {
                     else {
                         pinching = true
                         pageDrag = 0
+                        returnDrag = .zero
                         zoom.magnify(motion.scale, anchor: motion.anchor, in: geometry.size, translation: motion.translation)
                     }
                 }
             }
             .accessibilityAction(named: Text("Reset zoom")) { withAnimation { zoom = PhotoZoom() } }
-            .accessibilityAction(named: Text("Close photo viewer")) { dismiss() }
+            .accessibilityAction(named: Text("Close photo viewer")) { onClose() }
             .accessibilityAction(named: Text("Next item")) { pageBy(1) }
             .accessibilityAction(named: Text("Previous item")) { pageBy(-1) }
         }
@@ -1447,7 +1497,13 @@ private struct CollectionDetail: View {
             .onChanged { value in
                 guard !isDeleting, !isPaging, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
                 if zoom.scale > 1.01 { zoom.pan(value.translation, in: size); return }
+                if value.translation.height > abs(value.translation.width) {
+                    pageDrag = 0
+                    returnDrag = CGSize(width: value.translation.width * 0.35, height: value.translation.height)
+                    return
+                }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                returnDrag = .zero
                 let translation = value.translation.width
                 let beyondEdge = (currentIndex == 0 && translation > 0) || (currentIndex == items.count - 1 && translation < 0)
                 pageDrag = beyondEdge ? translation * 0.2 : translation
@@ -1457,12 +1513,19 @@ private struct CollectionDetail: View {
                 if zoom.scale > 1.01 { zoom.finishPan(); return }
                 let translation = value.translation
                 let predicted = value.predictedEndTranslation.width
-                if abs(translation.width) > abs(translation.height),
+                if translation.height > abs(translation.width),
+                   translation.height > 72 || (translation.height > 20 && value.predictedEndTranslation.height > 150) {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.9)) {
+                        returnDrag = .zero
+                        onClose()
+                    }
+                } else if abs(translation.width) > abs(translation.height),
                    abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
                     animatePage(translation.width < 0 ? 1 : -1, width: size.width)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
                         pageDrag = 0
+                        returnDrag = .zero
                     }
                 }
             }
@@ -1500,6 +1563,10 @@ private struct CollectionDetail: View {
         ZStack {
             AssetThumbnail(asset: asset, target: CGSize(width: 1200, height: 1600))
                 .frame(width: max(0, size.width - 32), height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .modifier(PhotoSlotDestination(id: asset.localIdentifier, slots: slots, active: asset.localIdentifier == currentID))
+                .scaleEffect(asset.localIdentifier == currentID && !reduceMotion ? max(0.75, 1 - returnDrag.height / 1800) : 1)
+                .offset(asset.localIdentifier == currentID && !reduceMotion ? returnDrag : .zero)
                 .scaleEffect(asset.localIdentifier == currentID ? zoom.scale : 1)
                 .offset(asset.localIdentifier == currentID ? zoom.offset : .zero)
             if asset.mediaType == .video {
@@ -1519,7 +1586,7 @@ private struct CollectionDetail: View {
         Task { @MainActor in
             do {
                 try await library.deleteReviewed([asset], from: section)
-                dismiss()
+                onClose()
             } catch { deletionError = error.localizedDescription }
             isDeleting = false
         }

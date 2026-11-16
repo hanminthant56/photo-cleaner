@@ -150,3 +150,9 @@ Physical-device checks: keep two fingers touching and translate at constant spac
 Collection viewers now use the native iOS sheet’s interactive downward dismissal. The custom photo drop, scale, fade-out, and unanimated second dismissal have been removed. Horizontal paging observes gestures simultaneously so it does not take priority over the sheet’s downward pan. Native dismissal is disabled during pinching, horizontal paging, and delete confirmation/requests. Done remains available.
 
 On device, drag down slowly and reverse before release to verify the system cancels smoothly; complete a downward flick to return to the same collection without a fade. Also verify horizontal/diagonal paging, pinch release, video playback dismissal, and delete confirmation locks. This is native sheet behavior, not a custom reproduction of Apple Photos’ thumbnail-zoom transition.
+
+## Return photos to their grid slots
+
+The collection viewer is now an in-place overlay in the same SwiftUI hierarchy as the grid, replacing sheet-based viewing. Shared photo IDs and a matched-geometry namespace connect each grid thumbnail to its enlarged image. A downward drag reveals the grid behind the photo; commit returns the photo to its thumbnail slot with a spring. A short drag restores the viewer. Paging updates the source slot, and the underlying grid brings offscreen destinations into view without an extra scrolling animation. The photo itself has no fade transition.
+
+Validate on iPhone: open a thumbnail and close by downward swipe/Done; cancel midway; navigate several items (including offscreen items) and close; verify the currently displayed photo lands in its own slot. Check cached previews, pinch-release, video presentation, selection mode, Reduce Motion, and single-item restore/delete. Matched-geometry behavior and device gesture feel remain unverified in this Linux workspace.

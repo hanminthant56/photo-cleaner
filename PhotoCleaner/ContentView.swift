@@ -246,6 +246,13 @@ struct ContentView: View {
         }
         .task { library.refresh() }
         .onChange(of: library.pending.first?.localIdentifier) { _, _ in cardZoom = PhotoZoom() }
+        .onChange(of: cardPinching) { _, active in
+            guard !active else { return }
+            cardPinchEnded = Date()
+            withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)) {
+                cardZoom = PhotoZoom()
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !isDismissing { library.refresh() }
         }
@@ -473,10 +480,6 @@ struct ContentView: View {
                 guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
                 offset = .zero
                 cardZoom.magnify(value.magnification)
-            }
-            .onEnded { _ in
-                cardZoom.finishMagnification()
-                cardPinchEnded = Date()
             }
     }
 
@@ -966,22 +969,16 @@ private struct MediaSelection: Identifiable {
 private struct PhotoZoom {
     var scale: CGFloat = 1
     var offset: CGSize = .zero
-    private var baseScale: CGFloat = 1
     private var baseOffset: CGSize = .zero
 
     mutating func magnify(_ magnification: CGFloat) {
         let oldScale = scale
-        scale = min(5, max(1, baseScale * magnification))
+        scale = min(5, max(1, magnification))
         if oldScale > 1.01 {
             let ratio = (scale - 1) / (oldScale - 1)
             offset = CGSize(width: offset.width * ratio, height: offset.height * ratio)
         }
         if scale <= 1.01 { offset = .zero; baseOffset = .zero }
-    }
-
-    mutating func finishMagnification() {
-        if scale <= 1.01 { self = PhotoZoom() }
-        else { baseScale = scale; baseOffset = offset }
     }
 
     mutating func pan(_ translation: CGSize, in size: CGSize) {
@@ -1245,6 +1242,13 @@ private struct CollectionDetail: View {
         .presentationBackground(.black)
         .interactiveDismissDisabled(true)
         .onChange(of: currentID) { _, _ in zoom = PhotoZoom(); dismissDrag = 0 }
+        .onChange(of: pinching) { _, active in
+            guard !active else { return }
+            pinchEnded = Date()
+            withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)) {
+                zoom = PhotoZoom()
+            }
+        }
         .onChange(of: library.reviewRevision) { _, _ in
             items = library.items(in: section)
             if !items.contains(where: { $0.localIdentifier == currentID }), let first = items.first {
@@ -1357,10 +1361,6 @@ private struct CollectionDetail: View {
                 pageDrag = 0
                 dismissDrag = 0
                 zoom.magnify(value.magnification)
-            }
-            .onEnded { _ in
-                zoom.finishMagnification()
-                pinchEnded = Date()
             }
     }
 

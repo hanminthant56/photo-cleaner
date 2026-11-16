@@ -126,3 +126,9 @@ Pinch queue cards and collection-viewer photos/posters to zoom from 1× to 5×. 
 At 1× in the collection viewer, downward dragging follows your finger and scales the photo gently. A committed downward swipe continues out and fades the viewer before returning to the same grid; short drags spring back. Reduce Motion skips the movement. Deletion/confirmation and page-transition locks remain in effect.
 
 Physical-device checks: pinch in/out repeatedly, pan to each edge at several zoom levels, zoom out while panned, verify no sort/album actions while pinching/panning, and verify Favorites double-tap remains. Swipe down slowly/quickly, cancel a short drag, page horizontally afterward, play a video, and test Reduce Motion. iOS compilation and gesture feel remain device validation steps.
+
+## Temporary pinch zoom
+
+Pinch-in/out changes magnification while touching the image. Releasing either card/viewer pinch returns scale and pan to the original 1× position with a gentle spring. Gesture-state cleanup also resets zoom when a pinch is interrupted. Reduce Motion restores without the spring. Zoom is no longer retained after release; double-tap Favorites and swipe actions remain unchanged.
+
+On device, release at several magnifications and interrupt a pinch; check both surfaces settle smoothly, return to the original framing, and do not trigger sorting, paging, album actions, or dismissal during release.

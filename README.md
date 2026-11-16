@@ -138,3 +138,9 @@ On device, release at several magnifications and interrupt a pinch; check both s
 Pinching now ranges from 0.5× to 5× while held. Both the main card and the collection viewer use the gesture’s initial pinch midpoint as their focal point, rather than always zooming into the center. Scaling uses fixed image viewports, with a compensating translation that keeps the touched image location stationary. Release still springs scale and position back to the original framing.
 
 Test pinches at each corner, edges, and center; check both shrinking and enlarging, reversing within the same pinch, portrait/landscape photos, and rapid pinch release. Verify the chosen focal point stays under the fingers and release does not trigger a swipe action. Actual iOS gesture testing remains required.
+
+## Moving while pinching
+
+Cards and collection photos now use simultaneous native pinch and two-finger pan recognition. The image follows the moving finger midpoint while scale changes (including below 1×), instead of holding the initial midpoint in place. Lifting/cancelling ends the session and restores the original framing with the existing spring. The transparent gesture marker does not replace tap targets; native recognizers are removed when their view leaves the hierarchy.
+
+Physical-device checks: keep two fingers touching and translate at constant spacing, translate while enlarging, translate while shrinking, change direction, and lift one/both fingers. Confirm no sudden jump, sorting, album action, or paging occurs during the two-finger interaction. Test several rapid sessions, video play taps afterward, double-tap Favorites, sheet opening/closing, and Reduce Motion. Cloud checks cover transform math and source wiring; native gesture behavior needs iPhone testing.

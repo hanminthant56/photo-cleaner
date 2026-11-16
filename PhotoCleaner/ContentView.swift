@@ -203,7 +203,7 @@ struct ContentView: View {
     @State private var isSavingAlbum = false
     @State private var albumNotice: String?
     @State private var cardZoom = PhotoZoom()
-    @GestureState private var cardPinching = false
+    @State private var cardPinching = false
     @State private var cardPinchEnded = Date.distantPast
     @State private var photoActionError: String?
 
@@ -427,7 +427,16 @@ struct ContentView: View {
             .accessibilityHidden(!front)
             .contentShape(RoundedRectangle(cornerRadius: 28))
             .highPriorityGesture(swipeGesture(for: asset, size: size))
-            .simultaneousGesture(cardMagnification(size: size))
+            .overlay {
+                PinchMotionSurface(active: front && !isDismissing && !isSavingAlbum && !isUpdatingFavorite && albumTarget == nil && playing == nil) { motion in
+                    if motion.ended { cardPinching = false }
+                    else {
+                        cardPinching = true
+                        offset = .zero
+                        cardZoom.magnify(motion.scale, anchor: motion.anchor, in: size, translation: motion.translation)
+                    }
+                }
+            }
             .accessibilityAction(named: Text("Reset zoom")) { withAnimation { cardZoom = PhotoZoom() } }
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
@@ -476,16 +485,6 @@ struct ContentView: View {
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
                 }
-            }
-    }
-
-    private func cardMagnification(size: CGSize) -> some Gesture {
-        MagnifyGesture()
-            .updating($cardPinching) { _, active, _ in active = true }
-            .onChanged { value in
-                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
-                offset = .zero
-                cardZoom.magnify(value.magnification, anchor: value.startAnchor, in: size)
             }
     }
 
@@ -971,18 +970,133 @@ private struct MediaSelection: Identifiable {
     var id: String { asset.localIdentifier }
 }
 
+/// Native two-finger recognizers track scale AND the moving finger midpoint.
+/// The marker does not intercept taps, play buttons, or single-finger swipes.
+private struct PinchMotionSurface: UIViewRepresentable {
+    struct Motion {
+        let scale: CGFloat
+        let anchor: UnitPoint
+        let translation: CGSize
+        var ended = false
+    }
+
+    let active: Bool
+    let onMotion: (Motion) -> Void
+
+    final class Marker: UIView {
+        var hierarchyChanged: (() -> Void)?
+        override func didMoveToWindow() { super.didMoveToWindow(); hierarchyChanged?() }
+        override func didMoveToSuperview() { super.didMoveToSuperview(); hierarchyChanged?() }
+    }
+
+    func makeUIView(context: Context) -> Marker {
+        let marker = Marker()
+        marker.isUserInteractionEnabled = false
+        marker.hierarchyChanged = { [weak coordinator = context.coordinator, weak marker] in
+            if let marker { coordinator?.attach(marker) }
+        }
+        return marker
+    }
+
+    func updateUIView(_ marker: Marker, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.callback = onMotion
+        coordinator.active = active
+        coordinator.attach(marker)
+        if !active { coordinator.finish() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    static func dismantleUIView(_ marker: Marker, coordinator: Coordinator) {
+        coordinator.detach()
+        marker.hierarchyChanged = nil
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        weak var marker: Marker?
+        weak var host: UIView?
+        var callback: ((Motion) -> Void)?
+        var active = false
+        private var start: CGPoint?
+        private var scale: CGFloat = 1
+        private lazy var pinch = UIPinchGestureRecognizer(target: self, action: #selector(changed(_:)))
+        private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(changed(_:)))
+
+        func attach(_ marker: Marker) {
+            self.marker = marker
+            guard marker.window != nil, var candidate = marker.superview else { return }
+            // Observe touches on the hosting view while keeping the marker transparent.
+            while !(candidate.next is UIViewController), let parent = candidate.superview, !(parent is UIWindow) {
+                candidate = parent
+            }
+            guard host !== candidate else { return }
+            detach()
+            self.marker = marker
+            host = candidate
+            pan.minimumNumberOfTouches = 2
+            pan.maximumNumberOfTouches = 2
+            for gesture in [pinch as UIGestureRecognizer, pan] {
+                gesture.delegate = self
+                gesture.cancelsTouchesInView = false
+                candidate.addGestureRecognizer(gesture)
+            }
+        }
+
+        func detach() {
+            finish()
+            host?.removeGestureRecognizer(pinch)
+            host?.removeGestureRecognizer(pan)
+            host = nil
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard active, let marker, marker.window != nil else { return false }
+            return marker.bounds.contains(touch.location(in: marker))
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        @objc private func changed(_ gesture: UIGestureRecognizer) {
+            guard active, let marker else { finish(); return }
+            switch gesture.state {
+            case .began, .changed:
+                guard gesture.numberOfTouches >= 2 else { return }
+                let point = gesture.location(in: marker)
+                if start == nil { start = point; scale = 1 }
+                if gesture === pinch { scale = pinch.scale }
+                guard let start else { return }
+                callback?(Motion(scale: scale,
+                    anchor: UnitPoint(x: start.x / max(marker.bounds.width, 1), y: start.y / max(marker.bounds.height, 1)),
+                    translation: CGSize(width: point.x - start.x, height: point.y - start.y)))
+            case .ended, .cancelled:
+                finish()
+            // One recognizer can fail while the other is actively tracking;
+            // that must not reset a valid two-finger session.
+            default: break
+            }
+        }
+
+        func finish() {
+            guard start != nil else { return }
+            start = nil
+            scale = 1
+            callback?(Motion(scale: 1, anchor: .center, translation: .zero, ended: true))
+        }
+    }
+}
+
 /// Shared zoom math for queue cards and the collection viewer.
 private struct PhotoZoom {
     var scale: CGFloat = 1
     var offset: CGSize = .zero
     private var baseOffset: CGSize = .zero
 
-    mutating func magnify(_ magnification: CGFloat, anchor: UnitPoint, in size: CGSize) {
+    mutating func magnify(_ magnification: CGFloat, anchor: UnitPoint, in size: CGSize, translation: CGSize = .zero) {
         scale = min(5, max(0.5, magnification))
         // Scaling about the center plus this translation keeps the point under
         // the initial pinch midpoint fixed, for both enlarging and shrinking.
-        offset = CGSize(width: (0.5 - anchor.x) * size.width * (scale - 1),
-                        height: (0.5 - anchor.y) * size.height * (scale - 1))
+        offset = CGSize(width: (0.5 - anchor.x) * size.width * (scale - 1) + translation.width,
+                        height: (0.5 - anchor.y) * size.height * (scale - 1) + translation.height)
         baseOffset = offset
     }
 
@@ -1192,7 +1306,7 @@ private struct CollectionDetail: View {
     @State private var pageDrag: CGFloat = 0
     @State private var dismissDrag: CGFloat = 0
     @State private var zoom = PhotoZoom()
-    @GestureState private var pinching = false
+    @State private var pinching = false
     @State private var pinchEnded = Date.distantPast
     @State private var isClosing = false
     @State private var items: [PHAsset]
@@ -1315,7 +1429,17 @@ private struct CollectionDetail: View {
             .contentShape(Rectangle())
             .coordinateSpace(name: "detailViewport")
             .highPriorityGesture(pageGesture(size: geometry.size))
-            .simultaneousGesture(magnification(size: geometry.size))
+            .overlay {
+                PinchMotionSurface(active: !isDeleting && !isPaging && !isClosing && confirmation == nil && playing == nil) { motion in
+                    if motion.ended { pinching = false }
+                    else {
+                        pinching = true
+                        pageDrag = 0
+                        dismissDrag = 0
+                        zoom.magnify(motion.scale, anchor: motion.anchor, in: geometry.size, translation: motion.translation)
+                    }
+                }
+            }
             .accessibilityAction(named: Text("Reset zoom")) { withAnimation { zoom = PhotoZoom() } }
             .accessibilityAction(named: Text("Close photo viewer")) { dismiss() }
             .accessibilityAction(named: Text("Next item")) { pageBy(1) }
@@ -1356,17 +1480,6 @@ private struct CollectionDetail: View {
                         dismissDrag = 0
                     }
                 }
-            }
-    }
-
-    private func magnification(size: CGSize) -> some Gesture {
-        MagnifyGesture()
-            .updating($pinching) { _, active, _ in active = true }
-            .onChanged { value in
-                guard !isDeleting, !isPaging, !isClosing, confirmation == nil else { return }
-                pageDrag = 0
-                dismissDrag = 0
-                zoom.magnify(value.magnification, anchor: value.startAnchor, in: size)
             }
     }
 

@@ -188,3 +188,9 @@ The viewer is now a top-level sibling above the complete app layout, including i
 Kept/Recently Removed order is precomputed when library/review data changes, and collection State starts with that snapshot in init rather than an empty array followed by onAppear reload. The first eight items of each collection get bounded local-only preview warmup; obsolete warmup requests are cancelled, and normal iCloud loading remains on demand.
 
 Check the very bottom edge on a physical iPhone while viewing any item, and verify no grid or tab leaks through at rest. Drag down to reveal the grid intentionally, then complete/cancel. Open each collection repeatedly with large libraries and verify there is no initial empty-grid frame. Uncached/iCloud-only media can still take time to load; actual first-paint timing requires device validation.
+
+## Explicit edge-to-edge viewer bounds
+
+The viewer now receives explicit window dimensions including all safe-area insets, and is offset to the actual top-left window edge. Its black backdrop and photo-return layer therefore cover the bottom/home-indicator region as well as the content area. Viewer controls are padded back inside those insets. The underlying grid and floating-tab layout remain unchanged, preserving return-slot geometry.
+
+Verify on a physical iPhone in portrait and landscape: at rest the viewer should cover the full window with no source thumbnails or tab visible below its actions. Downward dragging intentionally reveals the grid; returning completes at the measured thumbnail slot. Compilation and visual coverage still need Xcode/device validation.

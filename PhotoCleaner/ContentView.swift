@@ -225,25 +225,32 @@ struct ContentView: View {
     private var removing: Bool { offset.width < 0 }
 
     var body: some View {
-        ZStack {
+        GeometryReader { window in
             mainContent
+                .frame(width: window.size.width, height: window.size.height)
                 .accessibilityHidden(inspected != nil)
-            if let selection = inspected {
-                CollectionDetail(library: library, section: section, initialID: selection.id,
-                    slots: photoSlots, onPage: { viewedID = $0 }, onClose: {
-                        // Hand the image back without a second fade/layout animation.
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            inspected = nil
-                            viewedID = nil
-                        }
-                    })
-                    .transition(.identity)
-                    .zIndex(10)
-            }
+                .overlay(alignment: .topLeading) {
+                    if let selection = inspected {
+                        CollectionDetail(library: library, section: section, initialID: selection.id,
+                            slots: photoSlots, screenInsets: window.safeAreaInsets,
+                            onPage: { viewedID = $0 }, onClose: {
+                                var transaction = Transaction()
+                                transaction.disablesAnimations = true
+                                withTransaction(transaction) {
+                                    inspected = nil
+                                    viewedID = nil
+                                }
+                            })
+                            // The underlying content keeps its normal safe area and tab
+                            // layout; only the viewer expands to all four window edges.
+                            .frame(width: window.size.width + window.safeAreaInsets.leading + window.safeAreaInsets.trailing,
+                                   height: window.size.height + window.safeAreaInsets.top + window.safeAreaInsets.bottom)
+                            .offset(x: -window.safeAreaInsets.leading, y: -window.safeAreaInsets.top)
+                            .transition(.identity)
+                            .zIndex(10)
+                    }
+                }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(.dark)
     }
 
@@ -1416,6 +1423,7 @@ private struct CollectionDetail: View {
     @ObservedObject var library: PhotoLibrary
     let section: LibrarySection
     let slots: PhotoSlotFrames
+    let screenInsets: EdgeInsets
     let onPage: (String) -> Void
     let onClose: () -> Void
     @State private var currentID: String
@@ -1437,10 +1445,11 @@ private struct CollectionDetail: View {
     @State private var itemIndices: [String: Int]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(library: PhotoLibrary, section: LibrarySection, initialID: String, slots: PhotoSlotFrames, onPage: @escaping (String) -> Void, onClose: @escaping () -> Void) {
+    init(library: PhotoLibrary, section: LibrarySection, initialID: String, slots: PhotoSlotFrames, screenInsets: EdgeInsets, onPage: @escaping (String) -> Void, onClose: @escaping () -> Void) {
         self.library = library
         self.section = section
         self.slots = slots
+        self.screenInsets = screenInsets
         self.onPage = onPage
         self.onClose = onClose
         _currentID = State(initialValue: initialID)
@@ -1475,7 +1484,10 @@ private struct CollectionDetail: View {
                 .opacity(chromeVisible ? 1 : 0)
                 .allowsHitTesting(chromeVisible)
             }
-            .padding(.vertical, 16)
+            .padding(.top, screenInsets.top + 16)
+            .padding(.bottom, screenInsets.bottom + 16)
+            .padding(.leading, screenInsets.leading)
+            .padding(.trailing, screenInsets.trailing)
             .opacity(returningAsset == nil ? 1 : 0)
             .disabled(isDeleting || returningAsset != nil)
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }

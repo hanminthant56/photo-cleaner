@@ -118,3 +118,11 @@ Grid, card, and viewer images share a bounded in-memory preview cache keyed by P
 In a Kept/Recently Removed item viewer, drag down past 72 points or flick down to close and return to that collection grid. Short drags spring back, horizontal drags still page, and closing does not restore or change the item’s review decision. Video playback remains a separate player sheet.
 
 Test opening a visible thumbnail, paging forward/back, returning to a previously seen item, an edited photo, rapid open/close, iCloud-only media, and low-memory cache eviction. Verify downward close and horizontal navigation independently, plus short drags, Reduce Motion, and deletion confirmation/busy-state protection. Device timing still needs physical-phone validation.
+
+## Pinch zoom and smooth viewer dismissal
+
+Pinch queue cards and collection-viewer photos/posters to zoom from 1× to 5×. While zoomed, one-finger drags pan within bounds instead of sorting, album shortcuts, paging, or dismissal. Pinch back to 1× to resume those gestures; VoiceOver also offers Reset zoom. Double-tap still toggles Favorites on queue cards. Zoom resets on a new card/page, and viewer zoom does not alter the asset.
+
+At 1× in the collection viewer, downward dragging follows your finger and scales the photo gently. A committed downward swipe continues out and fades the viewer before returning to the same grid; short drags spring back. Reduce Motion skips the movement. Deletion/confirmation and page-transition locks remain in effect.
+
+Physical-device checks: pinch in/out repeatedly, pan to each edge at several zoom levels, zoom out while panned, verify no sort/album actions while pinching/panning, and verify Favorites double-tap remains. Swipe down slowly/quickly, cancel a short drag, page horizontally afterward, play a video, and test Reduce Motion. iOS compilation and gesture feel remain device validation steps.

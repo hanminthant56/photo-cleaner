@@ -202,6 +202,9 @@ struct ContentView: View {
     @State private var isUpdatingFavorite = false
     @State private var isSavingAlbum = false
     @State private var albumNotice: String?
+    @State private var cardZoom = PhotoZoom()
+    @GestureState private var cardPinching = false
+    @State private var cardPinchEnded = Date.distantPast
     @State private var photoActionError: String?
 
     private var progress: CGFloat { min(abs(offset.width) / 180, 1) }
@@ -242,6 +245,7 @@ struct ContentView: View {
             albumNotice = nil
         }
         .task { library.refresh() }
+        .onChange(of: library.pending.first?.localIdentifier) { _, _ in cardZoom = PhotoZoom() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !isDismissing { library.refresh() }
         }
@@ -350,7 +354,7 @@ struct ContentView: View {
         let front = depth == 0
         let scale: CGFloat = front ? 1 : 1 - CGFloat(depth) * 0.035 + progress * 0.035
         let lift: CGFloat = front ? 0 : CGFloat(depth) * 10 - progress * 10
-        return MediaCard(asset: asset, size: size) { playing = MediaSelection(asset: asset) }
+        return MediaCard(asset: asset, size: size, zoom: front ? cardZoom : PhotoZoom()) { playing = MediaSelection(asset: asset) }
             .overlay(alignment: removing ? .topTrailing : .topLeading) {
                 if front && abs(offset.width) >= abs(offset.height) {
                     decisionBadge.opacity(Double(progress)).padding(20).allowsHitTesting(false)
@@ -410,6 +414,8 @@ struct ContentView: View {
             .accessibilityHidden(!front)
             .contentShape(RoundedRectangle(cornerRadius: 28))
             .highPriorityGesture(swipeGesture(for: asset, size: size))
+            .simultaneousGesture(cardMagnification)
+            .accessibilityAction(named: Text("Reset zoom")) { withAnimation { cardZoom = PhotoZoom() } }
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleFavorite(asset) })
             .accessibilityAction(named: Text(asset.isFavorite ? "Remove from Favorites" : "Add to Favorites")) { toggleFavorite(asset) }
             .accessibilityAction(named: Text("Add to album")) { openAlbums(for: asset) }
@@ -431,10 +437,17 @@ struct ContentView: View {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("swipeDeck"))
             .onChanged { value in
                 guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                guard !cardPinching, Date().timeIntervalSince(cardPinchEnded) > 0.12 else { return }
+                if cardZoom.scale > 1.01 {
+                    cardZoom.pan(value.translation, in: size)
+                    return
+                }
                 offset = value.translation
             }
             .onEnded { value in
                 guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                guard !cardPinching, Date().timeIntervalSince(cardPinchEnded) > 0.12 else { return }
+                if cardZoom.scale > 1.01 { cardZoom.finishPan(); return }
                 let actual = value.translation
                 let projected = value.predictedEndTranslation
                 let horizontal = abs(actual.width) > abs(actual.height)
@@ -450,6 +463,20 @@ struct ContentView: View {
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { offset = .zero }
                 }
+            }
+    }
+
+    private var cardMagnification: some Gesture {
+        MagnifyGesture()
+            .updating($cardPinching) { _, active, _ in active = true }
+            .onChanged { value in
+                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                offset = .zero
+                cardZoom.magnify(value.magnification)
+            }
+            .onEnded { _ in
+                cardZoom.finishMagnification()
+                cardPinchEnded = Date()
             }
     }
 
@@ -935,15 +962,50 @@ private struct MediaSelection: Identifiable {
     var id: String { asset.localIdentifier }
 }
 
+/// Shared zoom math for queue cards and the collection viewer.
+private struct PhotoZoom {
+    var scale: CGFloat = 1
+    var offset: CGSize = .zero
+    private var baseScale: CGFloat = 1
+    private var baseOffset: CGSize = .zero
+
+    mutating func magnify(_ magnification: CGFloat) {
+        let oldScale = scale
+        scale = min(5, max(1, baseScale * magnification))
+        if oldScale > 1.01 {
+            let ratio = (scale - 1) / (oldScale - 1)
+            offset = CGSize(width: offset.width * ratio, height: offset.height * ratio)
+        }
+        if scale <= 1.01 { offset = .zero; baseOffset = .zero }
+    }
+
+    mutating func finishMagnification() {
+        if scale <= 1.01 { self = PhotoZoom() }
+        else { baseScale = scale; baseOffset = offset }
+    }
+
+    mutating func pan(_ translation: CGSize, in size: CGSize) {
+        let xLimit = size.width * (scale - 1) / 2
+        let yLimit = size.height * (scale - 1) / 2
+        offset = CGSize(width: min(xLimit, max(-xLimit, baseOffset.width + translation.width)),
+                        height: min(yLimit, max(-yLimit, baseOffset.height + translation.height)))
+    }
+
+    mutating func finishPan() { baseOffset = offset }
+}
+
 private struct MediaCard: View {
     let asset: PHAsset
     let size: CGSize
+    var zoom = PhotoZoom()
     let play: () -> Void
 
     var body: some View {
         ZStack {
             Color(red: 0.08, green: 0.10, blue: 0.14)
             AssetThumbnail(asset: asset, target: CGSize(width: size.width * 2, height: size.height * 2))
+                .scaleEffect(zoom.scale)
+                .offset(zoom.offset)
             if asset.mediaType == .video {
                 Button(action: play) {
                     Image(systemName: "play.fill")
@@ -1126,6 +1188,10 @@ private struct CollectionDetail: View {
     @State private var deletionError: String?
     @State private var pageDrag: CGFloat = 0
     @State private var dismissDrag: CGFloat = 0
+    @State private var zoom = PhotoZoom()
+    @GestureState private var pinching = false
+    @State private var pinchEnded = Date.distantPast
+    @State private var isClosing = false
     @State private var items: [PHAsset]
     @State private var isPaging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1169,13 +1235,16 @@ private struct CollectionDetail: View {
                 }
             }
             .padding(.vertical, 16)
-            .disabled(isDeleting || isPaging)
+            .disabled(isDeleting || isPaging || isClosing)
             .navigationTitle(section.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
+        .opacity(isClosing ? 0 : 1)
+        .presentationBackground(.black)
         .interactiveDismissDisabled(true)
+        .onChange(of: currentID) { _, _ in zoom = PhotoZoom(); dismissDrag = 0 }
         .onChange(of: library.reviewRevision) { _, _ in
             items = library.items(in: section)
             if !items.contains(where: { $0.localIdentifier == currentID }), let first = items.first {
@@ -1229,23 +1298,26 @@ private struct CollectionDetail: View {
                         .accessibilityHidden(entry.index != currentIndex)
                 }
             }
-            .offset(y: reduceMotion ? 0 : dismissDrag * 0.65)
+            .offset(y: reduceMotion ? 0 : dismissDrag)
             .scaleEffect(reduceMotion ? 1 : max(0.92, 1 - dismissDrag / 3000))
             .frame(width: width, height: geometry.size.height)
             .clipped()
             .contentShape(Rectangle())
             .coordinateSpace(name: "detailViewport")
-            .highPriorityGesture(pageGesture(width: width))
+            .highPriorityGesture(pageGesture(size: geometry.size))
+            .simultaneousGesture(magnification)
+            .accessibilityAction(named: Text("Reset zoom")) { withAnimation { zoom = PhotoZoom() } }
             .accessibilityAction(named: Text("Close photo viewer")) { dismiss() }
             .accessibilityAction(named: Text("Next item")) { pageBy(1) }
             .accessibilityAction(named: Text("Previous item")) { pageBy(-1) }
         }
     }
 
-    private func pageGesture(width: CGFloat) -> some Gesture {
+    private func pageGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("detailViewport"))
             .onChanged { value in
-                guard !isDeleting, !isPaging, confirmation == nil else { return }
+                guard !isDeleting, !isPaging, !isClosing, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                if zoom.scale > 1.01 { zoom.pan(value.translation, in: size); return }
                 if value.translation.height > abs(value.translation.width) {
                     pageDrag = 0
                     dismissDrag = value.translation.height
@@ -1258,15 +1330,16 @@ private struct CollectionDetail: View {
                 pageDrag = beyondEdge ? translation * 0.2 : translation
             }
             .onEnded { value in
-                guard !isDeleting, !isPaging, confirmation == nil else { return }
+                guard !isDeleting, !isPaging, !isClosing, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                if zoom.scale > 1.01 { zoom.finishPan(); return }
                 let translation = value.translation
                 let predicted = value.predictedEndTranslation.width
                 if translation.height > abs(translation.width),
                    translation.height > 72 || (translation.height > 20 && value.predictedEndTranslation.height > 150) {
-                    dismiss()
+                    closeWithDrag(height: size.height)
                 } else if abs(translation.width) > abs(translation.height),
                    abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
-                    animatePage(translation.width < 0 ? 1 : -1, width: width)
+                    animatePage(translation.width < 0 ? 1 : -1, width: size.width)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
                         pageDrag = 0
@@ -1274,6 +1347,34 @@ private struct CollectionDetail: View {
                     }
                 }
             }
+    }
+
+    private var magnification: some Gesture {
+        MagnifyGesture()
+            .updating($pinching) { _, active, _ in active = true }
+            .onChanged { value in
+                guard !isDeleting, !isPaging, !isClosing, confirmation == nil else { return }
+                pageDrag = 0
+                dismissDrag = 0
+                zoom.magnify(value.magnification)
+            }
+            .onEnded { _ in
+                zoom.finishMagnification()
+                pinchEnded = Date()
+            }
+    }
+
+    private func closeWithDrag(height: CGFloat) {
+        // Continue from the finger's position, then close the sheet without a
+        // second system slide animation pulling the image back into view.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2), completionCriteria: .removed) {
+            isClosing = true
+            dismissDrag = height + 180
+        } completion: {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { dismiss() }
+        }
     }
 
     private func animatePage(_ step: Int, width: CGFloat) {
@@ -1307,6 +1408,8 @@ private struct CollectionDetail: View {
     private func detailPage(_ asset: PHAsset) -> some View {
         ZStack {
             AssetThumbnail(asset: asset, target: CGSize(width: 1200, height: 1600))
+                .scaleEffect(asset.localIdentifier == currentID ? zoom.scale : 1)
+                .offset(asset.localIdentifier == currentID ? zoom.offset : .zero)
                 .padding(.horizontal, 16)
             if asset.mediaType == .video {
                 Button { playing = MediaSelection(asset: asset) } label: {

@@ -1304,11 +1304,9 @@ private struct CollectionDetail: View {
     @State private var isDeleting = false
     @State private var deletionError: String?
     @State private var pageDrag: CGFloat = 0
-    @State private var dismissDrag: CGFloat = 0
     @State private var zoom = PhotoZoom()
     @State private var pinching = false
     @State private var pinchEnded = Date.distantPast
-    @State private var isClosing = false
     @State private var items: [PHAsset]
     @State private var isPaging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1352,16 +1350,16 @@ private struct CollectionDetail: View {
                 }
             }
             .padding(.vertical, 16)
-            .disabled(isDeleting || isPaging || isClosing)
+            .disabled(isDeleting || isPaging)
             .navigationTitle(section.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isDeleting) } }
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
-        .opacity(isClosing ? 0 : 1)
         .presentationBackground(.black)
-        .interactiveDismissDisabled(true)
-        .onChange(of: currentID) { _, _ in zoom = PhotoZoom(); dismissDrag = 0 }
+        .presentationContentInteraction(.resizes)
+        .interactiveDismissDisabled(isDeleting || isPaging || confirmation != nil || pinching || abs(pageDrag) > 1)
+        .onChange(of: currentID) { _, _ in zoom = PhotoZoom() }
         .onChange(of: pinching) { _, active in
             guard !active else { return }
             pinchEnded = Date()
@@ -1422,20 +1420,17 @@ private struct CollectionDetail: View {
                         .accessibilityHidden(entry.index != currentIndex)
                 }
             }
-            .offset(y: reduceMotion ? 0 : dismissDrag)
-            .scaleEffect(reduceMotion ? 1 : max(0.92, 1 - dismissDrag / 3000))
             .frame(width: width, height: geometry.size.height)
             .clipped()
             .contentShape(Rectangle())
             .coordinateSpace(name: "detailViewport")
-            .highPriorityGesture(pageGesture(size: geometry.size))
+            .simultaneousGesture(pageGesture(size: geometry.size))
             .overlay {
-                PinchMotionSurface(active: !isDeleting && !isPaging && !isClosing && confirmation == nil && playing == nil) { motion in
+                PinchMotionSurface(active: !isDeleting && !isPaging && confirmation == nil && playing == nil) { motion in
                     if motion.ended { pinching = false }
                     else {
                         pinching = true
                         pageDrag = 0
-                        dismissDrag = 0
                         zoom.magnify(motion.scale, anchor: motion.anchor, in: geometry.size, translation: motion.translation)
                     }
                 }
@@ -1450,50 +1445,27 @@ private struct CollectionDetail: View {
     private func pageGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("detailViewport"))
             .onChanged { value in
-                guard !isDeleting, !isPaging, !isClosing, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                guard !isDeleting, !isPaging, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
                 if zoom.scale > 1.01 { zoom.pan(value.translation, in: size); return }
-                if value.translation.height > abs(value.translation.width) {
-                    pageDrag = 0
-                    dismissDrag = value.translation.height
-                    return
-                }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                dismissDrag = 0
                 let translation = value.translation.width
                 let beyondEdge = (currentIndex == 0 && translation > 0) || (currentIndex == items.count - 1 && translation < 0)
                 pageDrag = beyondEdge ? translation * 0.2 : translation
             }
             .onEnded { value in
-                guard !isDeleting, !isPaging, !isClosing, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                guard !isDeleting, !isPaging, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
                 if zoom.scale > 1.01 { zoom.finishPan(); return }
                 let translation = value.translation
                 let predicted = value.predictedEndTranslation.width
-                if translation.height > abs(translation.width),
-                   translation.height > 72 || (translation.height > 20 && value.predictedEndTranslation.height > 150) {
-                    closeWithDrag(height: size.height)
-                } else if abs(translation.width) > abs(translation.height),
+                if abs(translation.width) > abs(translation.height),
                    abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
                     animatePage(translation.width < 0 ? 1 : -1, width: size.width)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
                         pageDrag = 0
-                        dismissDrag = 0
                     }
                 }
             }
-    }
-
-    private func closeWithDrag(height: CGFloat) {
-        // Continue from the finger's position, then close the sheet without a
-        // second system slide animation pulling the image back into view.
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2), completionCriteria: .removed) {
-            isClosing = true
-            dismissDrag = height + 180
-        } completion: {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { dismiss() }
-        }
     }
 
     private func animatePage(_ step: Int, width: CGFloat) {

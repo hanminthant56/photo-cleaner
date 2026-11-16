@@ -144,3 +144,9 @@ Test pinches at each corner, edges, and center; check both shrinking and enlargi
 Cards and collection photos now use simultaneous native pinch and two-finger pan recognition. The image follows the moving finger midpoint while scale changes (including below 1×), instead of holding the initial midpoint in place. Lifting/cancelling ends the session and restores the original framing with the existing spring. The transparent gesture marker does not replace tap targets; native recognizers are removed when their view leaves the hierarchy.
 
 Physical-device checks: keep two fingers touching and translate at constant spacing, translate while enlarging, translate while shrinking, change direction, and lift one/both fingers. Confirm no sudden jump, sorting, album action, or paging occurs during the two-finger interaction. Test several rapid sessions, video play taps afterward, double-tap Favorites, sheet opening/closing, and Reduce Motion. Cloud checks cover transform math and source wiring; native gesture behavior needs iPhone testing.
+
+## Native viewer dismissal (replaces custom fade)
+
+Collection viewers now use the native iOS sheet’s interactive downward dismissal. The custom photo drop, scale, fade-out, and unanimated second dismissal have been removed. Horizontal paging observes gestures simultaneously so it does not take priority over the sheet’s downward pan. Native dismissal is disabled during pinching, horizontal paging, and delete confirmation/requests. Done remains available.
+
+On device, drag down slowly and reverse before release to verify the system cancels smoothly; complete a downward flick to return to the same collection without a fade. Also verify horizontal/diagonal paging, pinch release, video playback dismissal, and delete confirmation locks. This is native sheet behavior, not a custom reproduction of Apple Photos’ thumbnail-zoom transition.

@@ -1349,7 +1349,7 @@ private struct CollectionDetail: View {
     @State private var pinching = false
     @State private var pinchEnded = Date.distantPast
     @State private var items: [PHAsset]
-    @State private var isPaging = false
+    @State private var itemIndices: [String: Int]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(library: PhotoLibrary, section: LibrarySection, initialID: String, slots: PhotoSlotFrames, onPage: @escaping (String) -> Void, onClose: @escaping () -> Void) {
@@ -1359,12 +1359,18 @@ private struct CollectionDetail: View {
         self.onPage = onPage
         self.onClose = onClose
         _currentID = State(initialValue: initialID)
-        _items = State(initialValue: library.items(in: section))
+        let initialItems = library.items(in: section)
+        _items = State(initialValue: initialItems)
+        _itemIndices = State(initialValue: Dictionary(uniqueKeysWithValues: initialItems.enumerated().map { ($0.element.localIdentifier, $0.offset) }))
     }
 
-    private var current: PHAsset? { items.first { $0.localIdentifier == currentID } }
+    private var current: PHAsset? {
+        guard let index = itemIndices[currentID], items.indices.contains(index) else { return nil }
+        return items[index]
+    }
+    private var chromeVisible: Bool { returnDrag.height < 1 && returningAsset == nil }
     private var position: String {
-        guard let index = items.firstIndex(where: { $0.localIdentifier == currentID }) else { return "" }
+        guard let index = itemIndices[currentID] else { return "" }
         return "\(index + 1) of \(items.count)"
     }
 
@@ -1375,33 +1381,18 @@ private struct CollectionDetail: View {
                 HStack {
                     Text(section.rawValue).font(.headline)
                     Spacer()
-                    Button("Done") { returnToSlot() }.disabled(isDeleting || isPaging)
+                    Button("Done") { returnToSlot() }.disabled(isDeleting)
                 }.padding(.horizontal, 20)
+                    .opacity(chromeVisible ? 1 : 0)
+                    .allowsHitTesting(chromeVisible)
                 pager
-                HStack(spacing: 24) {
-                    Button { pageBy(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                        .disabled(currentIndex == 0 || isPaging).accessibilityLabel("Previous item")
-                    Text(position).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    Button { pageBy(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-                        .disabled(currentIndex >= items.count - 1 || isPaging).accessibilityLabel("Next item")
-                }
-                if let current {
-                    Button("Return to Swipe Queue", systemImage: "arrow.uturn.backward") {
-                        library.restore(current)
-                        onClose()
-                    }
-                    .buttonStyle(.bordered)
-                    if section == .kept || section == .removed {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            confirmation = MediaSelection(asset: current)
-                        }
-                        .buttonStyle(.bordered).tint(.red)
-                    }
-                }
+                viewerActions
+                .opacity(chromeVisible ? 1 : 0)
+                .allowsHitTesting(chromeVisible)
             }
             .padding(.vertical, 16)
             .opacity(returningAsset == nil ? 1 : 0)
-            .disabled(isDeleting || isPaging || returningAsset != nil)
+            .disabled(isDeleting || returningAsset != nil)
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1428,7 +1419,8 @@ private struct CollectionDetail: View {
         }
         .onChange(of: library.reviewRevision) { _, _ in
             items = library.items(in: section)
-            if !items.contains(where: { $0.localIdentifier == currentID }), let first = items.first {
+            itemIndices = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.localIdentifier, $0.offset) })
+            if itemIndices[currentID] == nil, let first = items.first {
                 currentID = first.localIdentifier
             }
         }
@@ -1448,8 +1440,33 @@ private struct CollectionDetail: View {
         } message: { Text(deletionError ?? "Please try again.") }
     }
 
+    private var viewerActions: some View {
+    VStack(spacing: 16) {
+    HStack(spacing: 24) {
+        Button { pageBy(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+            .disabled(currentIndex == 0).accessibilityLabel("Previous item")
+        Text(position).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        Button { pageBy(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+            .disabled(currentIndex >= items.count - 1).accessibilityLabel("Next item")
+    }
+    if let current {
+        Button("Return to Swipe Queue", systemImage: "arrow.uturn.backward") {
+            library.restore(current)
+            onClose()
+        }
+        .buttonStyle(.bordered)
+        if section == .kept || section == .removed {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                confirmation = MediaSelection(asset: current)
+            }
+            .buttonStyle(.bordered).tint(.red)
+        }
+    }
+    }
+    }
+
     private var currentIndex: Int {
-        items.firstIndex(where: { $0.localIdentifier == currentID }) ?? 0
+        itemIndices[currentID] ?? 0
     }
 
     private struct Page: Identifiable {
@@ -1475,8 +1492,9 @@ private struct CollectionDetail: View {
                     detailPage(entry.asset, size: geometry.size)
                         .frame(width: width, height: geometry.size.height)
                         .offset(x: CGFloat(entry.index - currentIndex) * width + pageDrag)
-                        .allowsHitTesting(entry.index == currentIndex && !isPaging)
+                        .allowsHitTesting(entry.index == currentIndex)
                         .accessibilityHidden(entry.index != currentIndex)
+                        .transition(.identity)
                 }
             }
             .frame(width: width, height: geometry.size.height)
@@ -1486,7 +1504,7 @@ private struct CollectionDetail: View {
             .coordinateSpace(name: "detailViewport")
             .simultaneousGesture(pageGesture(size: geometry.size))
             .overlay {
-                PinchMotionSurface(active: !isDeleting && !isPaging && returningAsset == nil && confirmation == nil && playing == nil) { motion in
+                PinchMotionSurface(active: !isDeleting && returningAsset == nil && confirmation == nil && playing == nil) { motion in
                     if motion.ended { pinching = false }
                     else {
                         pinching = true
@@ -1506,7 +1524,7 @@ private struct CollectionDetail: View {
     private func pageGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("detailViewport"))
             .onChanged { value in
-                guard !isDeleting, !isPaging, returningAsset == nil, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                guard !isDeleting, returningAsset == nil, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
                 if zoom.scale > 1.01 { zoom.pan(value.translation, in: size); return }
                 if value.translation.height > abs(value.translation.width) {
                     pageDrag = 0
@@ -1520,7 +1538,7 @@ private struct CollectionDetail: View {
                 pageDrag = beyondEdge ? translation * 0.2 : translation
             }
             .onEnded { value in
-                guard !isDeleting, !isPaging, returningAsset == nil, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
+                guard !isDeleting, returningAsset == nil, confirmation == nil, !pinching, Date().timeIntervalSince(pinchEnded) > 0.12 else { return }
                 if zoom.scale > 1.01 { zoom.finishPan(); return }
                 let translation = value.translation
                 let predicted = value.predictedEndTranslation.width
@@ -1529,7 +1547,7 @@ private struct CollectionDetail: View {
                     returnToSlot()
                 } else if abs(translation.width) > abs(translation.height),
                    abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
-                    animatePage(translation.width < 0 ? 1 : -1, width: size.width)
+                    animatePage(translation.width < 0 ? 1 : -1)
                 } else {
                     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
                         pageDrag = 0
@@ -1540,7 +1558,7 @@ private struct CollectionDetail: View {
     }
 
     private func returnToSlot() {
-        guard !isDeleting, !isPaging, returningAsset == nil, confirmation == nil else { return }
+        guard !isDeleting, returningAsset == nil, confirmation == nil else { return }
         guard !reduceMotion, let asset = current,
               let target = slots.frames[asset.localIdentifier], target.width > 0,
               viewportFrame.width > 0 else { onClose(); return }
@@ -1566,32 +1584,23 @@ private struct CollectionDetail: View {
         }
     }
 
-    private func animatePage(_ step: Int, width: CGFloat) {
+    private func animatePage(_ step: Int) {
         let next = currentIndex + step
-        guard items.indices.contains(next), !isPaging else {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { pageDrag = 0 }
+        guard items.indices.contains(next), !isDeleting, returningAsset == nil, confirmation == nil else {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.92)) { pageDrag = 0 }
             return
         }
-        let nextID = items[next].localIdentifier
-        isPaging = true
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22), completionCriteria: .removed) {
-            pageDrag = -CGFloat(step) * width
-        } completion: {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                currentID = nextID
-                pageDrag = 0
-                isPaging = false
-            }
+        // Commit immediately. The retained page IDs animate their new positions,
+        // and a new drag may interrupt this spring without waiting for completion.
+        withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0.08)) {
+            currentID = items[next].localIdentifier
+            pageDrag = 0
+            returnDrag = .zero
         }
     }
 
     private func pageBy(_ step: Int) {
-        let next = currentIndex + step
-        guard !isDeleting, !isPaging, items.indices.contains(next) else { return }
-        currentID = items[next].localIdentifier
-        pageDrag = 0
+        animatePage(step)
     }
 
     private func detailPage(_ asset: PHAsset, size: CGSize) -> some View {

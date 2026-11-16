@@ -162,3 +162,9 @@ Validate on iPhone: open a thumbnail and close by downward swipe/Done; cancel mi
 Normal left/right pages no longer use matched geometry. They keep a fixed viewport and full-size photo layout. While dragging down, the photo follows the finger and reveals the grid. On release, a separate cached return-image layer starts at the exact dragged frame and animates to the current asset’s measured thumbnail frame. The image never fades; only the backdrop clears. The viewer closes after the return animation completes. This replaces the previous matched-geometry implementation, which interfered with page sizing.
 
 Device regression checks: page repeatedly in both directions and verify each photo stays full size. Drag down slowly, reverse/cancel, then complete; verify the photo starts its return from the release position and lands in the current item’s slot. Repeat after browsing to an offscreen item. Check video controls, pinch, source-thumbnail visibility after close, Reduce Motion, and single-item deletion/restore.
+
+## Viewer controls and continuous browsing
+
+The viewer title, Done button, position/navigation controls, and item actions hide as soon as a downward return drag begins. Their layout space is retained, keeping the image frame stable; controls return when a short drag springs back.
+
+Horizontal paging now commits the next ID on release and uses an interruptible spring over stable page IDs. There is no completion callback or animation lock disabling the next gesture. Detail index lookup is cached and rebuilt only when library data changes. Test rapid consecutive swipes and reversals, boundary bounce, navigation buttons, downward return after rapid paging, and delete/restore targeting the visible item. Actual phone timing remains a device validation step.

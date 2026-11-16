@@ -168,3 +168,9 @@ Device regression checks: page repeatedly in both directions and verify each pho
 The viewer title, Done button, position/navigation controls, and item actions hide as soon as a downward return drag begins. Their layout space is retained, keeping the image frame stable; controls return when a short drag springs back.
 
 Horizontal paging now commits the next ID on release and uses an interruptible spring over stable page IDs. There is no completion callback or animation lock disabling the next gesture. Detail index lookup is cached and rebuilt only when library data changes. Test rapid consecutive swipes and reversals, boundary bounce, navigation buttons, downward return after rapid paging, and delete/restore targeting the visible item. Actual phone timing remains a device validation step.
+
+## Return-slot clipping and timing
+
+The collection records its actual scroll viewport below its toolbar. Return targets are brought fully into that viewport when needed, rather than treating any on-screen thumbnail as visible. The temporary returning image’s clip interpolates into the same scroll viewport, so the completed image cannot linger above the collection toolbar. Return now uses a fixed 0.22-second ease-out rather than waiting for a spring to settle. At logical completion, the cached grid thumbnail is restored and the temporary layer is removed in a transaction with animations disabled.
+
+On phone, close items in the first/last visible row, after paging beyond the original screen, and near the toolbar boundary. Verify no overlap-then-underlap, no extra final resizing/fade, and that short cancelled drags, continuous horizontal paging, and pinches still behave correctly. Physical timing and rendering remain device validation steps.

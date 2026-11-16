@@ -268,8 +268,13 @@ struct ContentView: View {
             if let selection = inspected {
                 CollectionDetail(library: library, section: section, initialID: selection.id,
                     slots: photoSlots, onPage: { viewedID = $0 }, onClose: {
-                        inspected = nil
-                        viewedID = nil
+                        // Hand the image back without a second fade/layout animation.
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            inspected = nil
+                            viewedID = nil
+                        }
                     })
                     .transition(.identity)
                     .zIndex(10)
@@ -663,6 +668,11 @@ private struct CollectionBrowser: View {
                     .background(SelectionAutoScroller(location: dragLocation, active: anchor != nil && selectionTouchActive))
                 }
             }
+            .background(GeometryReader { geometry in
+                Color.clear
+                    .onAppear { slots.viewport = geometry.frame(in: .global) }
+                    .onChange(of: geometry.frame(in: .global)) { _, frame in slots.viewport = frame }
+            })
             .onPreferenceChange(CollectionFrames.self) { updated in
                 frames = updated
                 slots.frames = updated
@@ -676,7 +686,7 @@ private struct CollectionBrowser: View {
             .onChange(of: viewedID) { _, id in
                 guard let id else { return }
                 // Keep the current photo's real slot laid out beneath the viewer.
-                if frames[id].map({ $0.intersects(UIScreen.main.bounds) }) != true {
+                if frames[id].map({ slots.viewport.contains($0.insetBy(dx: 1, dy: 1)) }) != true {
                     var transaction = Transaction()
                     transaction.disablesAnimations = true
                     withTransaction(transaction) { scrollProxy.scrollTo(id, anchor: .center) }
@@ -1326,6 +1336,7 @@ private final class PhotoSlotFrames: ObservableObject {
     // Geometry is sampled by the grid and read only when closing a photo.
     // It deliberately does not publish scrolling updates through the whole app.
     var frames: [String: CGRect] = [:]
+    var viewport: CGRect = .zero
 }
 
 private struct CollectionDetail: View {
@@ -1344,6 +1355,7 @@ private struct CollectionDetail: View {
     @State private var viewportFrame: CGRect = .zero
     @State private var returningAsset: PHAsset?
     @State private var returnFrame: CGRect = .zero
+    @State private var returnClipFrame: CGRect = .zero
     @State private var returnBackdrop: Double = 0
     @State private var zoom = PhotoZoom()
     @State private var pinching = false
@@ -1405,6 +1417,11 @@ private struct CollectionDetail: View {
                         .frame(width: max(1, returnFrame.width), height: max(1, returnFrame.height))
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .position(x: returnFrame.midX - origin.x, y: returnFrame.midY - origin.y)
+                        .mask {
+                            Rectangle()
+                                .frame(width: max(1, returnClipFrame.width), height: max(1, returnClipFrame.height))
+                                .position(x: returnClipFrame.midX - origin.x, y: returnClipFrame.midY - origin.y)
+                        }
                         .allowsHitTesting(false)
                 }
             }
@@ -1561,7 +1578,7 @@ private struct CollectionDetail: View {
         guard !isDeleting, returningAsset == nil, confirmation == nil else { return }
         guard !reduceMotion, let asset = current,
               let target = slots.frames[asset.localIdentifier], target.width > 0,
-              viewportFrame.width > 0 else { onClose(); return }
+              viewportFrame.width > 0, slots.viewport.width > 0 else { onClose(); return }
         let base = viewportFrame.insetBy(dx: 16, dy: 0)
         let scale = max(0.75, 1 - returnDrag.height / 1800)
         let start = CGRect(x: base.midX - base.width * scale / 2 + returnDrag.width,
@@ -1571,14 +1588,16 @@ private struct CollectionDetail: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             returnFrame = start
+            returnClipFrame = slots.viewport.union(start)
             returnBackdrop = max(0, 1 - Double(returnDrag.height / 400))
             returningAsset = asset
         }
         // Only this temporary return image changes frame. Normal pages never
         // participate in thumbnail geometry or change size while browsing.
         DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.9), completionCriteria: .removed) {
+            withAnimation(.easeOut(duration: 0.22), completionCriteria: .logicallyComplete) {
                 returnFrame = target
+                returnClipFrame = slots.viewport
                 returnBackdrop = 0
             } completion: { onClose() }
         }

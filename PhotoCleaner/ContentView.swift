@@ -973,38 +973,113 @@ private struct MediaCard: View {
     }
 }
 
+/// Shared previews let grid thumbnails paint the detail view before Photos finishes
+/// a larger request. Keys include modification time so edited images are refreshed.
+private final class PhotoPreviewCache {
+    static let shared = PhotoPreviewCache()
+    let manager = PHCachingImageManager()
+    private let images = NSCache<NSString, UIImage>()
+
+    private init() {
+        images.totalCostLimit = 96 * 1024 * 1024
+        images.countLimit = 160
+    }
+
+    func key(_ asset: PHAsset) -> String {
+        "\(asset.localIdentifier)/\(asset.modificationDate?.timeIntervalSince1970 ?? 0)"
+    }
+
+    func preview(_ asset: PHAsset) -> UIImage? {
+        images.object(forKey: ("preview/" + key(asset)) as NSString)
+    }
+
+    func rendered(_ asset: PHAsset, target: CGSize) -> UIImage? {
+        images.object(forKey: renderKey(asset, target: target) as NSString)
+    }
+
+    func store(_ image: UIImage, asset: PHAsset, target: CGSize, final: Bool) {
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+        let old = preview(asset)
+        let pixels = image.size.width * image.size.height * image.scale * image.scale
+        let oldPixels = old.map { $0.size.width * $0.size.height * $0.scale * $0.scale } ?? 0
+        if pixels >= oldPixels { images.setObject(image, forKey: ("preview/" + key(asset)) as NSString, cost: cost) }
+        if final { images.setObject(image, forKey: renderKey(asset, target: target) as NSString, cost: cost) }
+    }
+
+    private func renderKey(_ asset: PHAsset, target: CGSize) -> String {
+        "render/\(key(asset))/\(Int(target.width))x\(Int(target.height))"
+    }
+}
+
+private final class ThumbnailLoader: ObservableObject {
+    @Published var image: UIImage?
+    @Published var failed = false
+    private var request: PHImageRequestID?
+    private var generation = UUID()
+
+    init(asset: PHAsset) { image = PhotoPreviewCache.shared.preview(asset) }
+
+    func load(asset: PHAsset, target: CGSize) {
+        cancel()
+        let cache = PhotoPreviewCache.shared
+        if let rendered = cache.rendered(asset, target: target) {
+            image = rendered
+            failed = false
+            return
+        }
+        image = cache.preview(asset)
+        failed = false
+        let token = generation
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .fast
+        request = cache.manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { image, info in
+            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == token, !cancelled else { return }
+                if let image {
+                    cache.store(image, asset: asset, target: target, final: !degraded)
+                    // Do not replace the cached preview with a smaller interim image.
+                    self.image = cache.preview(asset) ?? image
+                    self.failed = false
+                } else if !degraded { self.failed = self.image == nil }
+                if !degraded { self.request = nil }
+            }
+        }
+    }
+
+    func cancel() {
+        generation = UUID()
+        if let request { PhotoPreviewCache.shared.manager.cancelImageRequest(request) }
+        request = nil
+    }
+}
+
 private struct AssetThumbnail: View {
     let asset: PHAsset
     let target: CGSize
-    @State private var image: UIImage?
-    @State private var failed = false
+    @StateObject private var loader: ThumbnailLoader
+
+    init(asset: PHAsset, target: CGSize) {
+        self.asset = asset
+        self.target = target
+        _loader = StateObject(wrappedValue: ThumbnailLoader(asset: asset))
+    }
 
     var body: some View {
         ZStack {
-            if let image {
+            if let image = loader.image {
                 Image(uiImage: image).resizable().scaledToFit()
-            } else if failed {
+            } else if loader.failed {
                 Label("Unable to load from iCloud", systemImage: "icloud.slash")
                     .font(.caption).foregroundStyle(.secondary).padding()
-            } else {
-                ProgressView().tint(.white)
-            }
+            } else { ProgressView().tint(.white) }
         }
-        .task(id: asset.localIdentifier) { await load() }
-    }
-
-    private func load() async {
-        let options = PHImageRequestOptions()
-        options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
-        let result: UIImage? = await withCheckedContinuation { continuation in
-            PHImageManager.default().requestImage(for: asset, targetSize: target, contentMode: .aspectFit, options: options) { image, info in
-                if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
-                continuation.resume(returning: image)
-            }
-        }
-        image = result
-        failed = result == nil
+        .onAppear { loader.load(asset: asset, target: target) }
+        .onChange(of: PhotoPreviewCache.shared.key(asset)) { _, _ in loader.load(asset: asset, target: target) }
+        .onDisappear { loader.cancel() }
     }
 }
 
@@ -1050,6 +1125,8 @@ private struct CollectionDetail: View {
     @State private var isDeleting = false
     @State private var deletionError: String?
     @State private var pageDrag: CGFloat = 0
+    @State private var dismissDrag: CGFloat = 0
+    @State private var items: [PHAsset]
     @State private var isPaging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1057,9 +1134,9 @@ private struct CollectionDetail: View {
         self.library = library
         self.section = section
         _currentID = State(initialValue: initialID)
+        _items = State(initialValue: library.items(in: section))
     }
 
-    private var items: [PHAsset] { library.items(in: section) }
     private var current: PHAsset? { items.first { $0.localIdentifier == currentID } }
     private var position: String {
         guard let index = items.firstIndex(where: { $0.localIdentifier == currentID }) else { return "" }
@@ -1099,6 +1176,12 @@ private struct CollectionDetail: View {
             .overlay { if isDeleting { ProgressView("Deleting…").padding().background(.regularMaterial, in: Capsule()) } }
         }
         .interactiveDismissDisabled(true)
+        .onChange(of: library.reviewRevision) { _, _ in
+            items = library.items(in: section)
+            if !items.contains(where: { $0.localIdentifier == currentID }), let first = items.first {
+                currentID = first.localIdentifier
+            }
+        }
         .sheet(item: $playing) { VideoPlayback(asset: $0.asset) }
         .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
             get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
@@ -1146,11 +1229,14 @@ private struct CollectionDetail: View {
                         .accessibilityHidden(entry.index != currentIndex)
                 }
             }
+            .offset(y: reduceMotion ? 0 : dismissDrag * 0.65)
+            .scaleEffect(reduceMotion ? 1 : max(0.92, 1 - dismissDrag / 3000))
             .frame(width: width, height: geometry.size.height)
             .clipped()
             .contentShape(Rectangle())
             .coordinateSpace(name: "detailViewport")
             .highPriorityGesture(pageGesture(width: width))
+            .accessibilityAction(named: Text("Close photo viewer")) { dismiss() }
             .accessibilityAction(named: Text("Next item")) { pageBy(1) }
             .accessibilityAction(named: Text("Previous item")) { pageBy(-1) }
         }
@@ -1160,7 +1246,13 @@ private struct CollectionDetail: View {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("detailViewport"))
             .onChanged { value in
                 guard !isDeleting, !isPaging, confirmation == nil else { return }
+                if value.translation.height > abs(value.translation.width) {
+                    pageDrag = 0
+                    dismissDrag = value.translation.height
+                    return
+                }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                dismissDrag = 0
                 let translation = value.translation.width
                 let beyondEdge = (currentIndex == 0 && translation > 0) || (currentIndex == items.count - 1 && translation < 0)
                 pageDrag = beyondEdge ? translation * 0.2 : translation
@@ -1169,11 +1261,17 @@ private struct CollectionDetail: View {
                 guard !isDeleting, !isPaging, confirmation == nil else { return }
                 let translation = value.translation
                 let predicted = value.predictedEndTranslation.width
-                if abs(translation.width) > abs(translation.height),
+                if translation.height > abs(translation.width),
+                   translation.height > 72 || (translation.height > 20 && value.predictedEndTranslation.height > 150) {
+                    dismiss()
+                } else if abs(translation.width) > abs(translation.height),
                    abs(translation.width) > 45 || (abs(translation.width) > 20 && abs(predicted) > 130) {
                     animatePage(translation.width < 0 ? 1 : -1, width: width)
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { pageDrag = 0 }
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
+                        pageDrag = 0
+                        dismissDrag = 0
+                    }
                 }
             }
     }

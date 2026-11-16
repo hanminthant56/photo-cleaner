@@ -110,3 +110,11 @@ Check with an old photo: keep it and confirm it appears first even above newer p
 Collection items and their index lookup are cached until library/review data changes. Hit-testing examines laid-out cells, selection updates only when the endpoint changes, and only the changed range is applied. Entering Select reserves tray space to avoid moving the grid under the finger. Auto-scroll ramps speed using display-frame elapsed time and stops when the gesture ends.
 
 On a physical phone with a large collection, test slow/fast range drags, reversing across the anchor, selecting/deselecting preselected items, and scrolling at both edges. Confirm the first selection does not shift the grid and lifting stops scrolling. Portable range-invariant checks run in the cloud; actual touch smoothness and iOS compilation require Mac/device validation.
+
+## Faster photo viewing and swipe-down return
+
+Grid, card, and viewer images share a bounded in-memory preview cache keyed by Photos identifier and modification time. The detail viewer can immediately display the loaded grid preview, accepts opportunistic low-resolution PhotoKit callbacks, and upgrades it while the larger image loads. Neighboring pages are loaded ahead, completed target-size requests are cached, and obsolete requests are cancelled with generation checks to prevent stale callbacks from changing reused views. iCloud-only images can still need a network download; immediate full-resolution display is not guaranteed.
+
+In a Kept/Recently Removed item viewer, drag down past 72 points or flick down to close and return to that collection grid. Short drags spring back, horizontal drags still page, and closing does not restore or change the item’s review decision. Video playback remains a separate player sheet.
+
+Test opening a visible thumbnail, paging forward/back, returning to a previously seen item, an edited photo, rapid open/close, iCloud-only media, and low-memory cache eviction. Verify downward close and horizontal navigation independently, plus short drags, Reduce Motion, and deletion confirmation/busy-state protection. Device timing still needs physical-phone validation.

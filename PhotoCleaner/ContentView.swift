@@ -327,14 +327,20 @@ struct ContentView: View {
     private var swipeArea: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width, 520)
-            let height = min(width * 1.4, max(180, geometry.size.height - 48))
+            let height = min(width * 1.4, max(180, geometry.size.height - 72))
             VStack(spacing: 14) {
                 Spacer(minLength: 8)
                 if !library.pending.isEmpty {
                     deck(size: CGSize(width: width, height: height))
-                    Text("Left to remove · Right to keep · ↓ Choose · ↑ Repeat")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                    VStack(spacing: 5) {
+                        Text("← remove · keep → · ↓ albums · ↑ repeat")
+                        Label("double-tap to favorite", systemImage: "heart")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
                 } else {
                     ContentUnavailableView(library.assets.isEmpty ? "No photos yet" : "All caught up", systemImage: "checkmark.circle", description: Text("Your kept and removed items are in the menu. New photos will appear here."))
                 }

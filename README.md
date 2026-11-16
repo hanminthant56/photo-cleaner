@@ -90,3 +90,11 @@ The collection detail viewer uses a fixed-size, explicit three-item paging viewp
 The app remembers the identifier of the last album successfully used, including newly created albums. Swipe up to add the current photo/video there and move it to Kept after Photos confirms success. A compact “Add to [name]” badge truncates long names in the middle; the success notice reads “Added to [name] · Kept.” Swipe down always opens the picker to choose a different album.
 
 With no prior successful choice, or when that album is unavailable/read-only, swipe up opens the picker. Cancelled and failed saves never mark an item Kept or change the remembered album. Verify both existing/new-album paths, relaunch persistence, an album renamed/deleted in Photos, long names, limited access, failed writes, and rapid repeat swipes. Confirm original favorite and delete protection still apply.
+
+## Kept collection actions
+
+Kept now offers **Return All to Swipe Queue** when no items are selected, with a confirmation and item count. This resets only the app review decisions; existing Apple Photos albums and favorite flags remain unchanged.
+
+Selected items in Kept offer both **Return to Swipe Queue** and **Delete**. Opening an individual Kept item also offers Delete. Both use the same Apple Photos confirmation, fresh favorite check, and success-only cleanup as Recently Removed. Delete All remains exclusive to Recently Removed. Favorite-containing deletion requests are blocked in full.
+
+Verify Return All cancel/confirm, that only Kept decisions reset, persistence after relaunch, selected and single-item Kept deletion cancel/success, and favorite protection for both. On single-item deletion, verify the visible item is the one targeted after paging. iOS compilation and Photos behavior still require Xcode/device testing.

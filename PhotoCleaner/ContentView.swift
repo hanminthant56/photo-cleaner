@@ -73,9 +73,12 @@ private final class PhotoLibrary: ObservableObject {
         save()
     }
 
-    func deleteRemoved(_ items: [PHAsset]) async throws {
-        // Only explicitly staged items may reach the system deletion request.
-        let staged = items.filter { decisions[$0.localIdentifier] == LibrarySection.removed.rawValue }
+    func deleteReviewed(_ items: [PHAsset], from section: LibrarySection) async throws {
+        // Deletion is limited to the explicitly opened review collection.
+        guard section == .kept || section == .removed else {
+            throw NSError(domain: "PhotoCleaner", code: 4, userInfo: [NSLocalizedDescriptionKey: "Choose items from Kept or Recently Removed before deleting."])
+        }
+        let staged = items.filter { decisions[$0.localIdentifier] == section.rawValue }
         let fetched = PHAsset.fetchAssets(withLocalIdentifiers: staged.map(\.localIdentifier), options: nil)
         var candidates: [PHAsset] = []
         fetched.enumerateObjects { asset, _, _ in candidates.append(asset) }
@@ -558,6 +561,7 @@ private struct CollectionBrowser: View {
     @State private var dragLocation: CGPoint?
     @GestureState private var selectionTouchActive = false
     @State private var deletion: DeletionRequest?
+    @State private var returnAll: [PHAsset]?
     @State private var isDeleting = false
     @State private var errorMessage: String?
 
@@ -602,6 +606,19 @@ private struct CollectionBrowser: View {
         .onDisappear { endSelectionDrag() }
         .onChange(of: library.assets.map(\.localIdentifier)) { _, _ in reconcileSelection() }
         .onChange(of: library.decisions) { _, _ in reconcileSelection() }
+        .confirmationDialog("Return all kept items?", isPresented: Binding(
+            get: { returnAll != nil }, set: { if !$0 { returnAll = nil } }
+        ), titleVisibility: .visible, presenting: returnAll) { assets in
+            Button("Return All to Swipe Queue") {
+                library.restore(assets)
+                selected.removeAll()
+                endSelectionDrag()
+                returnAll = nil
+            }
+            Button("Cancel", role: .cancel) { returnAll = nil }
+        } message: { assets in
+            Text("All \(assets.count) kept items will return to the swipe queue. Your Apple Photos albums and favorites stay unchanged.")
+        }
         .confirmationDialog("Delete from Apple Photos?", isPresented: Binding(
             get: { deletion != nil },
             set: { if !$0 { deletion = nil } }
@@ -646,6 +663,12 @@ private struct CollectionBrowser: View {
                     .font(.caption.weight(.semibold)).disabled(items.isEmpty)
                 }
                 Spacer()
+                if section == .kept && selected.isEmpty && !items.isEmpty {
+                    Button { returnAll = items } label: {
+                        Label("Return All to Swipe Queue", systemImage: "arrow.uturn.backward")
+                    }
+                    .font(.subheadline.weight(.semibold)).tint(.mint)
+                }
                 if section == .removed && selected.isEmpty && !items.isEmpty {
                     Button("Delete All", role: .destructive) { deletion = DeletionRequest(assets: items) }
                         .font(.subheadline.weight(.semibold))
@@ -747,7 +770,7 @@ private struct CollectionBrowser: View {
                     .frame(maxWidth: .infinity).padding(.vertical, 10)
             }
             .buttonStyle(.bordered).tint(.mint)
-            if section == .removed {
+            if section == .kept || section == .removed {
                 Button(role: .destructive) { deletion = DeletionRequest(assets: chosen) } label: {
                     Label("Delete", systemImage: "trash")
                         .frame(maxWidth: .infinity).padding(.vertical, 10)
@@ -771,7 +794,7 @@ private struct CollectionBrowser: View {
         deletion = nil
         Task { @MainActor in
             do {
-                try await library.deleteRemoved(assets)
+                try await library.deleteReviewed(assets, from: section)
                 selected.subtract(assets.map(\.localIdentifier))
             } catch {
                 errorMessage = "Nothing was removed by the app. \(error.localizedDescription)"
@@ -1000,7 +1023,7 @@ private struct CollectionDetail: View {
                         dismiss()
                     }
                     .buttonStyle(.bordered)
-                    if section == .removed {
+                    if section == .kept || section == .removed {
                         Button("Delete", systemImage: "trash", role: .destructive) {
                             confirmation = MediaSelection(asset: current)
                         }
@@ -1138,12 +1161,12 @@ private struct CollectionDetail: View {
     }
 
     private func deleteItem(_ asset: PHAsset) {
-        guard !isDeleting, section == .removed else { return }
+        guard !isDeleting, section == .kept || section == .removed else { return }
         isDeleting = true
         confirmation = nil
         Task { @MainActor in
             do {
-                try await library.deleteRemoved([asset])
+                try await library.deleteReviewed([asset], from: section)
                 dismiss()
             } catch { deletionError = error.localizedDescription }
             isDeleting = false

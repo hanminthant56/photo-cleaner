@@ -174,3 +174,9 @@ Horizontal paging now commits the next ID on release and uses an interruptible s
 The collection records its actual scroll viewport below its toolbar. Return targets are brought fully into that viewport when needed, rather than treating any on-screen thumbnail as visible. The temporary returning image’s clip interpolates into the same scroll viewport, so the completed image cannot linger above the collection toolbar. Return now uses a fixed 0.22-second ease-out rather than waiting for a spring to settle. At logical completion, the cached grid thumbnail is restored and the temporary layer is removed in a transaction with animations disabled.
 
 On phone, close items in the first/last visible row, after paging beyond the original screen, and near the toolbar boundary. Verify no overlap-then-underlap, no extra final resizing/fade, and that short cancelled drags, continuous horizontal paging, and pinches still behave correctly. Physical timing and rendering remain device validation steps.
+
+## Hide neighboring pages outside the photo viewport
+
+The pager now clips its rendered neighbors to the photo viewport so preloaded photo/video previews cannot appear underneath Return to Swipe Queue or Delete. Its lower clipping edge extends only during an active downward return drag, when viewer controls are hidden; the separate thumbnail-return layer is unchanged.
+
+On device, open portrait/landscape photos and video posters, page both directions, pinch, and check beneath the action buttons for leakage. Confirm short downward drags and completed returns still follow the finger without clipping the return animation.

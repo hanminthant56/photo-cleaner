@@ -1339,6 +1339,21 @@ private final class PhotoSlotFrames: ObservableObject {
     var viewport: CGRect = .zero
 }
 
+/// Neighbor pages stay inside the photo viewport. Only a downward return drag
+/// expands its lower edge, while the action controls are hidden.
+private struct PhotoPagerVisibleArea: Shape {
+    var downwardExtension: CGFloat
+    var animatableData: CGFloat {
+        get { downwardExtension }
+        set { downwardExtension = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width,
+                    height: rect.height + max(0, downwardExtension)))
+    }
+}
+
 private struct CollectionDetail: View {
     @ObservedObject var library: PhotoLibrary
     let section: LibrarySection
@@ -1515,6 +1530,7 @@ private struct CollectionDetail: View {
                 }
             }
             .frame(width: width, height: geometry.size.height)
+            .clipShape(PhotoPagerVisibleArea(downwardExtension: max(0, returnDrag.height)))
             .contentShape(Rectangle())
             .onAppear { viewportFrame = geometry.frame(in: .global) }
             .onChange(of: geometry.frame(in: .global)) { _, frame in viewportFrame = frame }

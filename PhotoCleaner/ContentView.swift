@@ -28,6 +28,14 @@ private final class PhotoLibrary: ObservableObject {
     @Published private(set) var kept: [PHAsset] = []
     @Published private(set) var removed: [PHAsset] = []
     @Published private(set) var recentAlbum: PHAssetCollection?
+    private enum LastAction {
+        case review(id: String, decision: String?, date: Double?, addedAlbum: String?)
+        case favorite(id: String, wasFavorite: Bool)
+    }
+    @Published private var lastAction: LastAction?
+    private var addedAlbumForReview: [String: String] = [:]
+    var canUndo: Bool { lastAction != nil }
+
     private let recentAlbumKey = "PhotoCleaner.recentAlbum.v1"
     private let storageKey = "PhotoCleaner.decisions.v1"
     private let datesKey = "PhotoCleaner.decisionDates.v1"
@@ -83,18 +91,23 @@ private final class PhotoLibrary: ObservableObject {
     }
 
     func decide(_ asset: PHAsset, section: LibrarySection) {
+        let id = asset.localIdentifier
+        lastAction = .review(id: id, decision: decisions[id], date: decisionDates[id],
+                             addedAlbum: addedAlbumForReview.removeValue(forKey: id))
         decisions[asset.localIdentifier] = section.rawValue
         decisionDates[asset.localIdentifier] = Date().timeIntervalSince1970
         save()
     }
 
     func restore(_ asset: PHAsset) {
+        lastAction = nil
         decisions.removeValue(forKey: asset.localIdentifier)
         decisionDates.removeValue(forKey: asset.localIdentifier)
         save()
     }
 
     func restore(_ items: [PHAsset]) {
+        lastAction = nil
         for asset in items {
             decisions.removeValue(forKey: asset.localIdentifier)
             decisionDates.removeValue(forKey: asset.localIdentifier)
@@ -118,6 +131,7 @@ private final class PhotoLibrary: ObservableObject {
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest.deleteAssets(candidates as NSArray)
         }
+        lastAction = nil
         // Preserve decisions if iOS denies/cancels the request; update only on success.
         for asset in candidates {
             decisions.removeValue(forKey: asset.localIdentifier)
@@ -132,10 +146,12 @@ private final class PhotoLibrary: ObservableObject {
         guard let current, current.canPerform(.properties) else {
             throw NSError(domain: "PhotoCleaner", code: 1, userInfo: [NSLocalizedDescriptionKey: "This item’s favorite status can’t be changed. Check Photos access in Settings."])
         }
-        let favorite = !current.isFavorite
+        let wasFavorite = current.isFavorite
+        let favorite = !wasFavorite
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest(for: current).isFavorite = favorite
         }
+        lastAction = .favorite(id: current.localIdentifier, wasFavorite: wasFavorite)
         refresh()
         return favorite
     }
@@ -155,9 +171,13 @@ private final class PhotoLibrary: ObservableObject {
         guard album.canPerform(.addContent) else {
             throw NSError(domain: "PhotoCleaner", code: 3, userInfo: [NSLocalizedDescriptionKey: "This album can’t be edited. Choose another album."])
         }
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "localIdentifier == %@", asset.localIdentifier)
+        let alreadyAdded = PHAsset.fetchAssets(in: album, options: options).count > 0
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetCollectionChangeRequest(for: album)?.addAssets([asset] as NSArray)
         }
+        if !alreadyAdded { addedAlbumForReview[asset.localIdentifier] = album.localIdentifier }
         rememberAlbum(album.localIdentifier)
     }
 
@@ -170,7 +190,43 @@ private final class PhotoLibrary: ObservableObject {
             request.addAssets([asset] as NSArray)
             createdID = request.placeholderForCreatedAssetCollection.localIdentifier
         }
-        if let createdID { rememberAlbum(createdID) }
+        if let createdID {
+            addedAlbumForReview[asset.localIdentifier] = createdID
+            rememberAlbum(createdID)
+        }
+    }
+
+    func undoPreviousAction() async throws -> Bool {
+        guard let action = lastAction else { return false }
+        switch action {
+        case let .review(id, decision, date, albumID):
+            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else {
+                throw NSError(domain: "PhotoCleaner", code: 5, userInfo: [NSLocalizedDescriptionKey: "This item is no longer available in your photo library."])
+            }
+            if let albumID, let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [albumID], options: nil).firstObject {
+                guard album.canPerform(.removeContent) else {
+                    throw NSError(domain: "PhotoCleaner", code: 6, userInfo: [NSLocalizedDescriptionKey: "This album can no longer be edited. The previous action was kept."])
+                }
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetCollectionChangeRequest(for: album)?.removeAssets([asset] as NSArray)
+                }
+            }
+            decisions[id] = decision
+            decisionDates[id] = date
+            lastAction = nil
+            save()
+            refresh()
+        case let .favorite(id, wasFavorite):
+            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else {
+                throw NSError(domain: "PhotoCleaner", code: 5, userInfo: [NSLocalizedDescriptionKey: "This item is no longer available in your photo library."])
+            }
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest(for: asset).isFavorite = wasFavorite
+            }
+            lastAction = nil
+            refresh()
+        }
+        return true
     }
 
     func refreshRecentAlbum() {
@@ -214,6 +270,7 @@ struct ContentView: View {
     @State private var albumTarget: MediaSelection?
     @State private var heartFeedback: HeartFeedback?
     @State private var isUpdatingFavorite = false
+    @State private var isUndoing = false
     @State private var isSavingAlbum = false
     @State private var albumNotice: String?
     @State private var cardZoom = PhotoZoom()
@@ -252,6 +309,9 @@ struct ContentView: View {
                 }
         }
         .preferredColorScheme(.dark)
+        .background(ShakeUndoReceiver(enabled: section == .all && inspected == nil && albumTarget == nil && playing == nil && !isDismissing && !isUpdatingFavorite && !isSavingAlbum && !isUndoing && scenePhase == .active) {
+            undoPreviousAction()
+        })
     }
 
     private var mainContent: some View {
@@ -318,13 +378,16 @@ struct ContentView: View {
             Menu {
                 ForEach(LibrarySection.allCases, id: \.self) { item in
                     Button {
-                        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
                         section = item
                         offset = .zero
                     } label: {
                         Label(item.rawValue, systemImage: section == item ? "checkmark" : item.symbol)
                     }
                 }
+                Divider()
+                Button("Undo Last Action", systemImage: "arrow.uturn.backward") { undoPreviousAction() }
+                    .disabled(!library.canUndo || isUndoing || isDismissing || isUpdatingFavorite || isSavingAlbum)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 20, weight: .semibold))
@@ -375,7 +438,16 @@ struct ContentView: View {
                     deck(size: CGSize(width: width, height: height))
                     VStack(spacing: 5) {
                         Text("← remove · keep → · ↓ albums · ↑ repeat")
-                        Label("double-tap to favorite", systemImage: "heart")
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 6) {
+                                Label("double-tap to favorite", systemImage: "heart")
+                                Text("· shake to undo")
+                            }
+                            VStack(spacing: 4) {
+                                Label("double-tap to favorite", systemImage: "heart")
+                                Text("shake to undo")
+                            }
+                        }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -499,7 +571,7 @@ struct ContentView: View {
     private func swipeGesture(for asset: PHAsset, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .named("swipeDeck"))
             .onChanged { value in
-                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
                 guard !cardPinching, Date().timeIntervalSince(cardPinchEnded) > 0.12 else { return }
                 if cardZoom.scale > 1.01 {
                     cardZoom.pan(value.translation, in: size)
@@ -508,7 +580,7 @@ struct ContentView: View {
                 offset = value.translation
             }
             .onEnded { value in
-                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+                guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
                 guard !cardPinching, Date().timeIntervalSince(cardPinchEnded) > 0.12 else { return }
                 if cardZoom.scale > 1.01 { cardZoom.finishPan(); return }
                 let actual = value.translation
@@ -530,7 +602,7 @@ struct ContentView: View {
     }
 
     private func openAlbums(for asset: PHAsset) {
-        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
         withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
             offset = .zero
         }
@@ -538,7 +610,7 @@ struct ContentView: View {
     }
 
     private func reuseAlbum(for asset: PHAsset, size: CGSize) {
-        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
         library.refreshRecentAlbum()
         guard let album = library.recentAlbum else {
             openAlbums(for: asset)
@@ -572,7 +644,7 @@ struct ContentView: View {
     }
 
     private func decide(_ asset: PHAsset, keep: Bool, size: CGSize) {
-        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
         if !keep {
             let current = PHAsset.fetchAssets(withLocalIdentifiers: [asset.localIdentifier], options: nil).firstObject
             if current?.isFavorite == true {
@@ -600,7 +672,9 @@ struct ContentView: View {
 
     private var collection: some View {
         CollectionBrowser(library: library, section: section, slots: photoSlots, viewedID: viewedID) { asset in
-            withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.9)) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 viewedID = asset.localIdentifier
                 inspected = MediaSelection(asset: asset)
             }
@@ -620,7 +694,7 @@ struct ContentView: View {
     }
 
     private func toggleFavorite(_ asset: PHAsset) {
-        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, offset == .zero else { return }
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing, offset == .zero else { return }
         isUpdatingFavorite = true
         Task { @MainActor in
             do {
@@ -634,8 +708,70 @@ struct ContentView: View {
         }
     }
 
+    private func undoPreviousAction() {
+        guard library.canUndo, !isUndoing, !isDismissing, !isUpdatingFavorite, !isSavingAlbum else { return }
+        isUndoing = true
+        Task { @MainActor in
+            do {
+                if try await library.undoPreviousAction() {
+                    offset = .zero
+                    cardZoom = PhotoZoom()
+                    heartFeedback = nil
+                    albumNotice = "Previous action undone"
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            } catch { photoActionError = error.localizedDescription }
+            isUndoing = false
+        }
+    }
+
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+    }
+}
+
+private struct ShakeUndoReceiver: UIViewControllerRepresentable {
+    let enabled: Bool
+    let undo: () -> Void
+
+    final class Controller: UIViewController {
+        var enabled = false
+        var undo: (() -> Void)?
+        private var lastShake = Date.distantPast
+        override var canBecomeFirstResponder: Bool { enabled }
+        override func loadView() {
+            view = UIView()
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+        }
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            if enabled { becomeFirstResponder() }
+        }
+        override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+            guard enabled, motion == .motionShake, Date().timeIntervalSince(lastShake) > 1 else { return }
+            lastShake = Date()
+            undo?()
+        }
+    }
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.undo = undo
+        let changed = controller.enabled != enabled
+        controller.enabled = enabled
+        if changed {
+            DispatchQueue.main.async { [weak controller] in
+                guard let controller else { return }
+                if controller.enabled { controller.becomeFirstResponder() }
+                else { controller.resignFirstResponder() }
+            }
+        }
+    }
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.enabled = false
+        controller.undo = nil
+        controller.resignFirstResponder()
     }
 }
 
@@ -1456,6 +1592,8 @@ private struct CollectionDetail: View {
     @State private var returnFrame: CGRect = .zero
     @State private var returnClipFrame: CGRect = .zero
     @State private var returnBackdrop: Double = 0
+    @State private var opening = false
+    @State private var openingStarted = false
     @State private var zoom = PhotoZoom()
     @State private var pinching = false
     @State private var pinchEnded = Date.distantPast
@@ -1474,6 +1612,14 @@ private struct CollectionDetail: View {
         let initialItems = library.items(in: section)
         _items = State(initialValue: initialItems)
         _itemIndices = State(initialValue: Dictionary(uniqueKeysWithValues: initialItems.enumerated().map { ($0.element.localIdentifier, $0.offset) }))
+        if !UIAccessibility.isReduceMotionEnabled, slots.viewport.width > 0,
+           let source = slots.frames[initialID], source.width > 0,
+           let asset = initialItems.first(where: { $0.localIdentifier == initialID }) {
+            _returningAsset = State(initialValue: asset)
+            _returnFrame = State(initialValue: source)
+            _returnClipFrame = State(initialValue: slots.viewport)
+            _opening = State(initialValue: true)
+        }
     }
 
     private var current: PHAsset? {
@@ -1620,8 +1766,14 @@ private struct CollectionDetail: View {
             .frame(width: width, height: geometry.size.height)
             .clipShape(PhotoPagerVisibleArea(downwardExtension: max(0, returnDrag.height)))
             .contentShape(Rectangle())
-            .onAppear { viewportFrame = geometry.frame(in: .global) }
-            .onChange(of: geometry.frame(in: .global)) { _, frame in viewportFrame = frame }
+            .onAppear {
+                viewportFrame = geometry.frame(in: .global)
+                animateOpening()
+            }
+            .onChange(of: geometry.frame(in: .global)) { _, frame in
+                viewportFrame = frame
+                animateOpening()
+            }
             .coordinateSpace(name: "detailViewport")
             .simultaneousGesture(pageGesture(size: geometry.size))
             .overlay {
@@ -1676,6 +1828,26 @@ private struct CollectionDetail: View {
                     }
                 }
             }
+    }
+
+    private func animateOpening() {
+        guard opening, !openingStarted, viewportFrame.width > 32, viewportFrame.height > 0 else { return }
+        openingStarted = true
+        let target = viewportFrame.insetBy(dx: 16, dy: 0)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.24), completionCriteria: .logicallyComplete) {
+                returnFrame = target
+                returnClipFrame = slots.viewport.union(viewportFrame)
+                returnBackdrop = 1
+            } completion: {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    opening = false
+                    returningAsset = nil
+                }
+            }
+        }
     }
 
     private func returnToSlot() {

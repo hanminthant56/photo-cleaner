@@ -224,3 +224,7 @@ All Photos is now the root of a NavigationStack; Kept and Recently Removed are n
 The collection title now lives in the native navigation bar, with the existing three-dot menu at the right. The full-window individual-photo viewer remains above navigation and keeps its separate downward-to-thumbnail return behavior.
 
 Test on iPhone: slow edge drag, direction reversal/cancel, quick edge flick, standard back button, root/menu/floating-tab navigation, grid scrolling and range selection, photo viewing/pinch/downward return, and Reduce Motion. This change uses the native transition, but actual feel and compilation cannot be verified in the Linux workspace.
+
+## Collection back-swipe removed
+
+The collection navigation stack/interactive edge-back feature has been removed at the user’s request. Kept and Recently Removed are selected directly from the menu again; use the floating Swipe tab or All Photos menu item to return. Grid titles remain visible, and the existing photo viewer, paging, pinch gestures, and photo-to-grid animations are unchanged.

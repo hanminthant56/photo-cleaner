@@ -283,15 +283,7 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { window in
-            NavigationStack(path: collectionPath) {
-                mainContent
-                    .navigationTitle("All Photos")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar(.hidden, for: .navigationBar)
-                    .navigationDestination(for: LibrarySection.self) { destination in
-                        collectionScreen(destination)
-                    }
-            }
+            mainContent
                 .frame(width: window.size.width, height: window.size.height)
                 .accessibilityHidden(inspected != nil)
                 .overlay(alignment: .topLeading) {
@@ -327,7 +319,8 @@ struct ContentView: View {
             header
             if library.hasAccess {
                 if library.authorization == .limited { limitedAccessNotice }
-                swipeArea
+                if section == .all { swipeArea }
+                else { collection(for: section) }
             } else {
                 permissionView
             }
@@ -407,30 +400,6 @@ struct ContentView: View {
         }
         .disabled(isDismissing)
         .accessibilityLabel("Photo collections")
-    }
-
-    private var collectionPath: Binding<[LibrarySection]> {
-        Binding(get: { section == .all ? [] : [section] },
-                set: { section = $0.last ?? .all })
-    }
-
-    private func collectionScreen(_ destination: LibrarySection) -> some View {
-        VStack(spacing: 12) {
-            if library.hasAccess {
-                if library.authorization == .limited { limitedAccessNotice }
-                collection(for: destination)
-            } else { permissionView }
-        }
-        .padding(.horizontal, 16)
-        .background(Color(red: 0.035, green: 0.055, blue: 0.09).ignoresSafeArea())
-        .foregroundStyle(.white)
-        .safeAreaInset(edge: .bottom) { swipeTab.padding(.vertical, 8) }
-        .navigationTitle(destination.rawValue)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { collectionMenu }
-        }
     }
 
     private var limitedAccessNotice: some View {
@@ -953,6 +922,7 @@ private struct CollectionBrowser: View {
     private var collectionToolbar: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
+                Text(section.rawValue).font(.title2.weight(.semibold))
                 Spacer()
                 if !items.isEmpty {
                     Button(isSelecting ? "Done" : "Select") {

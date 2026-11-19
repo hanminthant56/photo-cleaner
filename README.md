@@ -216,3 +216,11 @@ The compact card hint now includes “shake to undo.” Test Keep, Remove, Favor
 In the Kept or Recently Removed grid, drag right from the screen’s left edge to reveal All Photos beneath. Release after roughly one-third of the screen or with a rightward flick to return; a short/cancelled drag settles back into the collection. Ordinary drags starting inside the grid still select/scroll. The edge recognizer is off in All Photos and while an item viewer, album picker, or video player is open. A named Back to All Photos accessibility action is provided.
 
 Validate on iPhone: slow commit, short cancel, flick commit, vertical motion at the edge, selecting/scrolling away from the edge, and open-item left/right browsing. Confirm no review decisions, selection records, or photo assets are changed by navigation. Native edge recognition/gesture conflicts require device testing.
+
+## Native collection back navigation (replaces the custom edge gesture)
+
+All Photos is now the root of a NavigationStack; Kept and Recently Removed are native destinations with their standard back button and interactive edge-pop gesture. The custom UIScreenEdgePanGestureRecognizer, per-frame offset state, completion thresholds, and recreated swipe-screen background have been removed. iOS controls progress, velocity, cancellation, and completion. Destination content uses its own stable section value so it does not switch to All Photos during an interactive pop.
+
+The collection title now lives in the native navigation bar, with the existing three-dot menu at the right. The full-window individual-photo viewer remains above navigation and keeps its separate downward-to-thumbnail return behavior.
+
+Test on iPhone: slow edge drag, direction reversal/cancel, quick edge flick, standard back button, root/menu/floating-tab navigation, grid scrolling and range selection, photo viewing/pinch/downward return, and Reduce Motion. This change uses the native transition, but actual feel and compilation cannot be verified in the Linux workspace.

@@ -3,7 +3,7 @@ import Photos
 import AVKit
 import Combine
 
-private enum LibrarySection: String, CaseIterable {
+private enum LibrarySection: String, CaseIterable, Hashable {
     case all = "All Photos"
     case kept = "Kept"
     case removed = "Recently Removed"
@@ -277,17 +277,21 @@ struct ContentView: View {
     @State private var cardPinching = false
     @State private var cardPinchEnded = Date.distantPast
     @State private var photoActionError: String?
-    @State private var libraryBackOffset: CGFloat = 0
-    @State private var libraryBackActive = false
-    @State private var libraryBackFinishing = false
-    @State private var libraryWidth: CGFloat = 1
 
     private var progress: CGFloat { min(abs(offset.width) / 180, 1) }
     private var removing: Bool { offset.width < 0 }
 
     var body: some View {
         GeometryReader { window in
-            mainContent
+            NavigationStack(path: collectionPath) {
+                mainContent
+                    .navigationTitle("All Photos")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(for: LibrarySection.self) { destination in
+                        collectionScreen(destination)
+                    }
+            }
                 .frame(width: window.size.width, height: window.size.height)
                 .accessibilityHidden(inspected != nil)
                 .overlay(alignment: .topLeading) {
@@ -313,13 +317,6 @@ struct ContentView: View {
                 }
         }
         .preferredColorScheme(.dark)
-        .background(LeftEdgeBackReceiver(enabled: section != .all && inspected == nil && albumTarget == nil && playing == nil && !libraryBackFinishing,
-            changed: { translation in
-                libraryBackActive = true
-                libraryBackOffset = min(libraryWidth, max(0, translation))
-            }, ended: { translation, velocity, cancelled in
-                finishLibraryBack(translation: translation, velocity: velocity, cancelled: cancelled)
-            }))
         .background(ShakeUndoReceiver(enabled: section == .all && inspected == nil && albumTarget == nil && playing == nil && !isDismissing && !isUpdatingFavorite && !isSavingAlbum && !isUndoing && scenePhase == .active) {
             undoPreviousAction()
         })
@@ -330,11 +327,7 @@ struct ContentView: View {
             header
             if library.hasAccess {
                 if library.authorization == .limited { limitedAccessNotice }
-                if section == .all {
-                    swipeArea
-                } else {
-                    collectionNavigation
-                }
+                swipeArea
             } else {
                 permissionView
             }
@@ -386,30 +379,58 @@ struct ContentView: View {
         HStack {
             TabPageTitle(title: "Swipe")
             Spacer()
-            Menu {
-                ForEach(LibrarySection.allCases, id: \.self) { item in
-                    Button {
-                        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
-                        section = item
-                        offset = .zero
-                    } label: {
-                        Label(item.rawValue, systemImage: section == item ? "checkmark" : item.symbol)
-                    }
-                }
-                Divider()
-                Button("Undo Last Action", systemImage: "arrow.uturn.backward") { undoPreviousAction() }
-                    .disabled(!library.canUndo || isUndoing || isDismissing || isUpdatingFavorite || isSavingAlbum)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 20, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.white.opacity(0.06), in: Circle())
-                    .contentShape(Circle())
-            }
-            .disabled(isDismissing)
-            .accessibilityLabel("Photo collections")
+            collectionMenu
         }
         .padding(.horizontal, 8)
+    }
+
+    private var collectionMenu: some View {
+        Menu {
+            ForEach(LibrarySection.allCases, id: \.self) { item in
+                Button {
+                    guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
+                    withAnimation { section = item }
+                    offset = .zero
+                } label: {
+                    Label(item.rawValue, systemImage: section == item ? "checkmark" : item.symbol)
+                }
+            }
+            Divider()
+            Button("Undo Last Action", systemImage: "arrow.uturn.backward") { undoPreviousAction() }
+                .disabled(!library.canUndo || isUndoing || isDismissing || isUpdatingFavorite || isSavingAlbum)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .background(.white.opacity(0.06), in: Circle())
+                .contentShape(Circle())
+        }
+        .disabled(isDismissing)
+        .accessibilityLabel("Photo collections")
+    }
+
+    private var collectionPath: Binding<[LibrarySection]> {
+        Binding(get: { section == .all ? [] : [section] },
+                set: { section = $0.last ?? .all })
+    }
+
+    private func collectionScreen(_ destination: LibrarySection) -> some View {
+        VStack(spacing: 12) {
+            if library.hasAccess {
+                if library.authorization == .limited { limitedAccessNotice }
+                collection(for: destination)
+            } else { permissionView }
+        }
+        .padding(.horizontal, 16)
+        .background(Color(red: 0.035, green: 0.055, blue: 0.09).ignoresSafeArea())
+        .foregroundStyle(.white)
+        .safeAreaInset(edge: .bottom) { swipeTab.padding(.vertical, 8) }
+        .navigationTitle(destination.rawValue)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { collectionMenu }
+        }
     }
 
     private var limitedAccessNotice: some View {
@@ -681,51 +702,8 @@ struct ContentView: View {
         }
     }
 
-    private var collectionNavigation: some View {
-        GeometryReader { geometry in
-            ZStack {
-                if libraryBackActive {
-                    swipeArea
-                        .offset(x: -geometry.size.width * 0.22 + libraryBackOffset * 0.22)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-                collection
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(Color(red: 0.035, green: 0.055, blue: 0.09))
-                    .shadow(color: .black.opacity(libraryBackActive ? 0.25 : 0), radius: 10, x: -4)
-                    .offset(x: libraryBackOffset)
-                    .allowsHitTesting(!libraryBackActive)
-            }
-            .clipped()
-            .onAppear { libraryWidth = geometry.size.width }
-            .onChange(of: geometry.size.width) { _, width in libraryWidth = width }
-        }
-        .accessibilityAction(named: Text("Back to All Photos")) { finishLibraryBack(translation: libraryWidth, velocity: 0, cancelled: false) }
-    }
-
-    private func finishLibraryBack(translation: CGFloat, velocity: CGFloat, cancelled: Bool) {
-        guard section != .all, !libraryBackFinishing else { return }
-        let commit = !cancelled && (translation > libraryWidth * 0.32 || (translation > 20 && velocity > 650))
-        libraryBackActive = true
-        libraryBackFinishing = true
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2), completionCriteria: .logicallyComplete) {
-            libraryBackOffset = commit ? libraryWidth : 0
-        } completion: {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                if commit { section = .all }
-                libraryBackOffset = 0
-                libraryBackActive = false
-                libraryBackFinishing = false
-            }
-        }
-    }
-
-    private var collection: some View {
-        CollectionBrowser(library: library, section: section, slots: photoSlots, viewedID: viewedID) { asset in
-            guard !libraryBackActive, !libraryBackFinishing else { return }
+    private func collection(for destination: LibrarySection) -> some View {
+        CollectionBrowser(library: library, section: destination, slots: photoSlots, viewedID: viewedID) { asset in
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -733,11 +711,11 @@ struct ContentView: View {
                 inspected = MediaSelection(asset: asset)
             }
         }
-        .id(section)
+        .id(destination)
     }
 
     private var swipeTab: some View {
-        Button { if !isDismissing { section = .all } } label: {
+        Button { if !isDismissing { withAnimation { section = .all } } } label: {
             Label("Swipe", systemImage: "hand.draw.fill")
                 .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 22).frame(height: 48)
@@ -781,74 +759,6 @@ struct ContentView: View {
 
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-    }
-}
-
-/// A genuine left-edge pan leaves ordinary grid selection/scrolling gestures alone.
-private struct LeftEdgeBackReceiver: UIViewRepresentable {
-    let enabled: Bool
-    let changed: (CGFloat) -> Void
-    let ended: (CGFloat, CGFloat, Bool) -> Void
-
-    final class Marker: UIView {
-        var attach: (() -> Void)?
-        override func didMoveToWindow() { super.didMoveToWindow(); attach?() }
-        override func didMoveToSuperview() { super.didMoveToSuperview(); attach?() }
-    }
-
-    func makeUIView(context: Context) -> Marker {
-        let marker = Marker()
-        marker.isUserInteractionEnabled = false
-        marker.attach = { [weak coordinator = context.coordinator, weak marker] in
-            if let marker { coordinator?.attach(marker) }
-        }
-        return marker
-    }
-    func updateUIView(_ marker: Marker, context: Context) {
-        context.coordinator.changed = changed
-        context.coordinator.ended = ended
-        context.coordinator.attach(marker)
-        context.coordinator.pan.isEnabled = enabled
-    }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    static func dismantleUIView(_ marker: Marker, coordinator: Coordinator) {
-        marker.attach = nil
-        coordinator.host?.removeGestureRecognizer(coordinator.pan)
-    }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        weak var host: UIView?
-        var changed: ((CGFloat) -> Void)?
-        var ended: ((CGFloat, CGFloat, Bool) -> Void)?
-        lazy var pan: UIScreenEdgePanGestureRecognizer = {
-            let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handle(_:)))
-            gesture.edges = .left
-            gesture.maximumNumberOfTouches = 1
-            gesture.delegate = self
-            return gesture
-        }()
-
-        func attach(_ marker: Marker) {
-            guard marker.window != nil, var candidate = marker.superview else { return }
-            while !(candidate.next is UIViewController), let parent = candidate.superview, !(parent is UIWindow) { candidate = parent }
-            guard host !== candidate else { return }
-            host?.removeGestureRecognizer(pan)
-            host = candidate
-            candidate.addGestureRecognizer(pan)
-        }
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            let velocity = pan.velocity(in: host)
-            return velocity.x > 0 && velocity.x > abs(velocity.y)
-        }
-        @objc private func handle(_ gesture: UIScreenEdgePanGestureRecognizer) {
-            let translation = max(0, gesture.translation(in: host).x)
-            switch gesture.state {
-            case .began, .changed: changed?(translation)
-            case .ended: ended?(translation, gesture.velocity(in: host).x, false)
-            case .cancelled: ended?(translation, 0, true)
-            default: break
-            }
-        }
     }
 }
 
@@ -1043,7 +953,6 @@ private struct CollectionBrowser: View {
     private var collectionToolbar: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(section.rawValue).font(.title2.weight(.semibold))
                 Spacer()
                 if !items.isEmpty {
                     Button(isSelecting ? "Done" : "Select") {

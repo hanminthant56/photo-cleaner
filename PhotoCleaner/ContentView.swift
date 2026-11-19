@@ -368,6 +368,16 @@ struct ContentView: View {
         }
     }
 
+    private func switchSection(_ destination: LibrarySection) {
+        guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            section = destination
+            offset = .zero
+        }
+    }
+
     private var header: some View {
         HStack {
             TabPageTitle(title: "Swipe")
@@ -382,8 +392,7 @@ struct ContentView: View {
             ForEach(LibrarySection.allCases, id: \.self) { item in
                 Button {
                     guard !isDismissing, !isUpdatingFavorite, !isSavingAlbum, !isUndoing else { return }
-                    withAnimation { section = item }
-                    offset = .zero
+                    switchSection(item)
                 } label: {
                     Label(item.rawValue, systemImage: section == item ? "checkmark" : item.symbol)
                 }
@@ -684,7 +693,7 @@ struct ContentView: View {
     }
 
     private var swipeTab: some View {
-        Button { if !isDismissing { withAnimation { section = .all } } } label: {
+        Button { switchSection(.all) } label: {
             Label("Swipe", systemImage: "hand.draw.fill")
                 .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 22).frame(height: 48)

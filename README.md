@@ -228,3 +228,7 @@ Test on iPhone: slow edge drag, direction reversal/cancel, quick edge flick, sta
 ## Collection back-swipe removed
 
 The collection navigation stack/interactive edge-back feature has been removed at the user’s request. Kept and Recently Removed are selected directly from the menu again; use the floating Swipe tab or All Photos menu item to return. Grid titles remain visible, and the existing photo viewer, paging, pinch gestures, and photo-to-grid animations are unchanged.
+
+## Immediate section switching
+
+All Photos, Kept, and Recently Removed switch in an animation-disabled transaction from either the menu or floating Swipe tab. No content crossfade is requested. Card gestures, image opening/return, and selection-tray animations remain separate and unchanged.
